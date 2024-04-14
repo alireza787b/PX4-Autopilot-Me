@@ -85,6 +85,8 @@ px4_add_romfs_files(
 	4011_gz_lawnmower
 
 	5001_xplane_cessna172
+	5002_xplane_tb2
+
 	5010_xplane_ehang184
 	5020_xplane_alia250
 
