@@ -19,8 +19,6 @@
 # Load default configuration for fixed-wing aircraft
 . ${R}etc/init.d/rc.fw_defaults
 
-param set-default EKF2_ABL_TAU 0.3
-param set-default EKF2_ABL_LIM 2
 param set-default EKF2_BARO_CTRL 1
 
 
@@ -142,3 +140,20 @@ param set-default FW_PR_D 0.3550
 param set-default FW_RR_D 0.0850
 param set-default FW_RR_I 0.1300
 param set-default SYS_HAS_MAG 1
+
+param set-default EKF2_ABIAS_INIT 0.0000
+param set-default EKF2_ABL_LIM 0.8000
+param set-default EKF2_ABL_TAU 0.1000
+param set-default EKF2_ACC_NOISE 1.0000
+param set-default EKF2_AGP_CTRL 3
+param set-default EKF2_ASP_DELAY 0.0000
+param set-default EKF2_AVEL_DELAY 0.0000
+param set-default EKF2_BARO_NOISE 0.1000
+param set-default EKF2_GPS_DELAY 0.0000
+param set-default EKF2_GPS_P_NOISE 0.0100
+param set-default EKF2_GPS_V_NOISE 0.0100
+param set-default EKF2_MULTI_IMU 1
+param set-default EKF2_REQ_VDRIFT 1.0000
+param set-default IMU_GYRO_RATEMAX 100
+param set-default IMU_INTEG_RATE 100
+

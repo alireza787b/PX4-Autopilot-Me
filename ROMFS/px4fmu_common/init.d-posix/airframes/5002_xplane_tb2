@@ -24,8 +24,6 @@ param set-default CA_ROTOR_COUNT 1
 param set-default CA_SV_CS_COUNT 7
 
 
-param set-default EKF2_ABL_TAU 0.3
-param set-default EKF2_ABL_LIM 2
 param set-default EKF2_BARO_CTRL 1
 
 
@@ -103,5 +101,23 @@ param set-default SDLOG_MODE 0
 param set-default SYS_HAS_MAG 1
 param set-default NAV_LOITER_RAD 1000
 param set-default EKF2_MAG_TYPE 0
+
+
+
+param set-default EKF2_ABIAS_INIT 0.0000
+param set-default EKF2_ABL_LIM 0.8000
+param set-default EKF2_ABL_TAU 0.1000
+param set-default EKF2_ACC_NOISE 1.0000
+param set-default EKF2_AGP_CTRL 3
+param set-default EKF2_ASP_DELAY 0.0000
+param set-default EKF2_AVEL_DELAY 0.0000
+param set-default EKF2_BARO_NOISE 0.1000
+param set-default EKF2_GPS_DELAY 0.0000
+param set-default EKF2_GPS_P_NOISE 0.0100
+param set-default EKF2_GPS_V_NOISE 0.0100
+param set-default EKF2_MULTI_IMU 1
+param set-default EKF2_REQ_VDRIFT 1.0000
+param set-default IMU_GYRO_RATEMAX 100
+param set-default IMU_INTEG_RATE 100
 
 # --- End of Configuration ---
