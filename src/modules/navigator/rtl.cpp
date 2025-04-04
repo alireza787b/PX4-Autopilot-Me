@@ -59,6 +59,7 @@ RTL::RTL(Navigator *navigator) :
 	ModuleParams(navigator),
 	_rtl_direct(navigator)
 {
+	_rtl_direct.initialize();
 }
 
 void RTL::updateDatamanCache()
@@ -157,24 +158,6 @@ void RTL::updateDatamanCache()
 	_dataman_cache_landItem.update();
 }
 
-void RTL::on_inactivation()
-{
-	switch (_rtl_type) {
-	case RtlType::RTL_MISSION_FAST: // Fall through
-	case RtlType::RTL_MISSION_FAST_REVERSE: // Fall through
-	case RtlType::RTL_DIRECT_MISSION_LAND:
-		_rtl_mission_type_handle->on_inactivation();
-		break;
-
-	case RtlType::RTL_DIRECT:
-		_rtl_direct.on_inactivation();
-		break;
-
-	default:
-		break;
-	}
-}
-
 void RTL::on_inactive()
 {
 	_global_pos_sub.update();
@@ -187,20 +170,11 @@ void RTL::on_inactive()
 
 	parameters_update();
 
-	switch (_rtl_type) {
-	case RtlType::RTL_MISSION_FAST:
-	case RtlType::RTL_MISSION_FAST_REVERSE:
-	case RtlType::RTL_DIRECT_MISSION_LAND:
-		_rtl_mission_type_handle->on_inactive();
-		break;
-
-	case RtlType::RTL_DIRECT:
-		_rtl_direct.on_inactive();
-		break;
-
-	default:
-		break;
+	if (_rtl_mission_type_handle) {
+		_rtl_mission_type_handle->run(false);
 	}
+
+	_rtl_direct.run(false);
 
 	// Limit inactive calculation to 0.5Hz
 	hrt_abstime now{hrt_absolute_time()};
@@ -230,7 +204,10 @@ void RTL::publishRemainingTimeEstimate()
 		case RtlType::RTL_DIRECT_MISSION_LAND:
 		case RtlType::RTL_MISSION_FAST:
 		case RtlType::RTL_MISSION_FAST_REVERSE:
-			estimated_time = _rtl_mission_type_handle->calc_rtl_time_estimate();
+			if (_rtl_mission_type_handle) {
+				estimated_time = _rtl_mission_type_handle->calc_rtl_time_estimate();
+			}
+
 			break;
 
 		default:
@@ -250,12 +227,10 @@ void RTL::on_activation()
 	case RtlType::RTL_MISSION_FAST: // Fall through
 	case RtlType::RTL_MISSION_FAST_REVERSE:
 		_rtl_mission_type_handle->setReturnAltMin(_enforce_rtl_alt);
-		_rtl_mission_type_handle->on_activation();
 		break;
 
 	case RtlType::RTL_DIRECT:
 		_rtl_direct.setReturnAltMin(_enforce_rtl_alt);
-		_rtl_direct.on_activation();
 		break;
 
 	default:
@@ -279,16 +254,23 @@ void RTL::on_active()
 	updateDatamanCache();
 
 	switch (_rtl_type) {
-	case RtlType::RTL_MISSION_FAST:
-	case RtlType::RTL_MISSION_FAST_REVERSE:
+	case RtlType::RTL_MISSION_FAST: // Fall through
+	case RtlType::RTL_MISSION_FAST_REVERSE: // Fall through
 	case RtlType::RTL_DIRECT_MISSION_LAND:
-		_rtl_mission_type_handle->on_active();
-		_rtl_mission_type_handle->updateFailsafeChecks();
+		if (_rtl_mission_type_handle) {
+			_rtl_mission_type_handle->run(true);
+		}
+
+		_rtl_direct.run(false);
 		break;
 
 	case RtlType::RTL_DIRECT:
-		_rtl_direct.on_active();
-		_rtl_direct.updateFailsafeChecks();
+		_rtl_direct.run(true);
+
+		if (_rtl_mission_type_handle) {
+			_rtl_mission_type_handle->run(false);
+		}
+
 		break;
 
 	default:
@@ -312,7 +294,10 @@ bool RTL::isLanding()
 	case RtlType::RTL_MISSION_FAST:
 	case RtlType::RTL_MISSION_FAST_REVERSE:
 	case RtlType::RTL_DIRECT_MISSION_LAND:
-		is_landing = _rtl_mission_type_handle->isLanding();
+		if (_rtl_mission_type_handle) {
+			is_landing = _rtl_mission_type_handle->isLanding();
+		}
+
 		break;
 
 	case RtlType::RTL_DIRECT:
@@ -333,7 +318,7 @@ void RTL::setRtlTypeAndDestination()
 
 	uint8_t safe_point_index{0U};
 
-	if (_param_rtl_type.get() != 2) {
+	if (_param_rtl_type.get() != 2 && _param_rtl_type.get() != 4) {
 		// check the closest allowed destination.
 		DestinationType destination_type{DestinationType::DESTINATION_TYPE_HOME};
 		PositionYawSetpoint rtl_position;
@@ -375,14 +360,7 @@ void RTL::setRtlTypeAndDestination()
 	_rtl_status_pub.get().timestamp = hrt_absolute_time();
 	_rtl_status_pub.get().safe_points_id = _safe_points_id;
 	_rtl_status_pub.get().is_evaluation_pending = _dataman_state != DatamanState::UpdateRequestWait;
-	_rtl_status_pub.get().has_vtol_approach = false;
-
-	if ((_param_rtl_type.get() == 0) || (_param_rtl_type.get() == 3)) {
-		_rtl_status_pub.get().has_vtol_approach = _home_has_land_approach || _one_rally_point_has_land_approach;
-
-	} else if (_param_rtl_type.get() == 1) {
-		_rtl_status_pub.get().has_vtol_approach = _one_rally_point_has_land_approach;
-	}
+	_rtl_status_pub.get().has_vtol_approach = _home_has_land_approach || _one_rally_point_has_land_approach;
 
 	_rtl_status_pub.get().rtl_type = static_cast<uint8_t>(_rtl_type);
 	_rtl_status_pub.get().safe_point_index = safe_point_index;
@@ -588,6 +566,14 @@ void RTL::init_rtl_mission_type()
 		} else {
 			new_rtl_mission_type = RtlType::RTL_MISSION_FAST_REVERSE;
 		}
+
+	} else if (_param_rtl_type.get() == 4) {
+		if (hasMissionLandStart() && reverseIsFurther()) {
+			new_rtl_mission_type = RtlType::RTL_MISSION_FAST;
+
+		} else {
+			new_rtl_mission_type = RtlType::RTL_MISSION_FAST_REVERSE;
+		}
 	}
 
 	if (_set_rtl_mission_type == new_rtl_mission_type) {
@@ -600,6 +586,8 @@ void RTL::init_rtl_mission_type()
 		_set_rtl_mission_type = RtlType::NONE;
 	}
 
+	mission_s new_mission = _mission_sub.get();
+
 	switch (new_rtl_mission_type) {
 	case RtlType::RTL_DIRECT_MISSION_LAND:
 		_rtl_mission_type_handle = new RtlDirectMissionLand(_navigator);
@@ -608,19 +596,23 @@ void RTL::init_rtl_mission_type()
 		break;
 
 	case RtlType::RTL_MISSION_FAST:
-		_rtl_mission_type_handle = new RtlMissionFast(_navigator);
+		_rtl_mission_type_handle = new RtlMissionFast(_navigator, new_mission);
 		_set_rtl_mission_type = RtlType::RTL_MISSION_FAST;
 		_rtl_type = RtlType::RTL_MISSION_FAST;
 		break;
 
 	case RtlType::RTL_MISSION_FAST_REVERSE:
-		_rtl_mission_type_handle = new RtlMissionFastReverse(_navigator);
+		_rtl_mission_type_handle = new RtlMissionFastReverse(_navigator, new_mission);
 		_set_rtl_mission_type = RtlType::RTL_MISSION_FAST_REVERSE;
 		_rtl_type = RtlType::RTL_MISSION_FAST_REVERSE;
 		break;
 
 	default:
 		break;
+	}
+
+	if (_rtl_mission_type_handle) {
+		_rtl_mission_type_handle->initialize();
 	}
 }
 
@@ -645,6 +637,12 @@ bool RTL::hasMissionLandStart() const
 	return _mission_sub.get().land_start_index >= 0 && _mission_sub.get().land_index >= 0
 	       && _navigator->get_mission_result()->valid;
 }
+
+bool RTL::reverseIsFurther() const
+{
+	return (_mission_sub.get().land_start_index - _mission_sub.get().current_seq) < _mission_sub.get().current_seq;
+}
+
 
 bool RTL::hasVtolLandApproach(const PositionYawSetpoint &rtl_position) const
 {

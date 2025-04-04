@@ -84,10 +84,6 @@ FixedwingRateControl::parameters_update()
 	_rate_control.setIntegratorLimit(
 		Vector3f(_param_fw_rr_imax.get(), _param_fw_pr_imax.get(), _param_fw_yr_imax.get()));
 
-	_rate_control.setFeedForwardGain(
-		// set FF gains to 0 as we add the FF control outside of the rate controller
-		Vector3f(0.f, 0.f, 0.f));
-
 	if (_handle_param_vt_fw_difthr_en != PARAM_INVALID) {
 		param_get(_handle_param_vt_fw_difthr_en, &_param_vt_fw_difthr_en);
 	}
@@ -183,10 +179,16 @@ float FixedwingRateControl::get_airspeed_and_update_scaling()
 	 *
 	 * Forcing the scaling to this value allows reasonable handheld tests.
 	 */
-	const float airspeed_constrained = constrain(constrain(airspeed, _param_fw_airspd_stall.get(),
-					   _param_fw_airspd_max.get()), 0.1f, 1000.0f);
 
-	_airspeed_scaling = (_param_fw_arsp_scale_en.get()) ? (_param_fw_airspd_trim.get() / airspeed_constrained) : 1.0f;
+
+	if (_param_fw_arsp_scale_en.get()) {
+		const float min_airspeed = math::max(_param_fw_airspd_stall.get(), 0.1f);
+		const float airspeed_constrained = math::max(airspeed, min_airspeed);
+		_airspeed_scaling = _param_fw_airspd_trim.get() / airspeed_constrained;
+
+	} else {
+		_airspeed_scaling = 1.0f;
+	}
 
 	return airspeed;
 }
@@ -354,14 +356,15 @@ void FixedwingRateControl::Run()
 					body_rates_setpoint = Vector3f(-_rates_sp.yaw, _rates_sp.pitch, _rates_sp.roll);
 				}
 
+				const Vector3f gain_ff(_param_fw_rr_ff.get(), _param_fw_pr_ff.get(), _param_fw_yr_ff.get());
+				const Vector3f scaled_gain_ff = gain_ff / _airspeed_scaling;
+				_rate_control.setFeedForwardGain(scaled_gain_ff);
+
 				// Run attitude RATE controllers which need the desired attitudes from above, add trim.
 				const Vector3f angular_acceleration_setpoint = _rate_control.update(rates, body_rates_setpoint, angular_accel, dt,
 						_landed);
 
-				const Vector3f gain_ff(_param_fw_rr_ff.get(), _param_fw_pr_ff.get(), _param_fw_yr_ff.get());
-				const Vector3f feedforward = gain_ff.emult(body_rates_setpoint) * _airspeed_scaling;
-
-				Vector3f control_u = angular_acceleration_setpoint * _airspeed_scaling * _airspeed_scaling + feedforward;
+				Vector3f control_u = angular_acceleration_setpoint * _airspeed_scaling * _airspeed_scaling;
 
 				// Special case yaw in Acro: if the parameter FW_ACRO_YAW_CTL is not set then don't control yaw
 				if (!_vcontrol_mode.flag_control_attitude_enabled && !_param_fw_acro_yaw_en.get()) {

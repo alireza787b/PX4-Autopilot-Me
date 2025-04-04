@@ -1,7 +1,7 @@
 argcomplete
 cerberus
 coverage
-empy==3.3.4
+empy>=3.3,<4
 future
 jinja2>=2.8
 jsonschema
@@ -26,3 +26,4 @@ setuptools>=39.2.0
 six>=1.12.0
 toml>=0.9
 sympy>=1.10.1
+pycryptodome

@@ -78,7 +78,6 @@ public:
 		RTL_MISSION_FAST_REVERSE,
 	};
 
-	void on_inactivation() override;
 	void on_inactive() override;
 	void on_activation() override;
 	void on_active() override;
@@ -105,6 +104,14 @@ private:
 	 * @return true if mission has a land start, a land and is valid
 	 */
 	bool hasMissionLandStart() const;
+
+
+	/**
+	 * @brief Check whether there are more waypoints between current waypoint
+	 *        and the takeoff location than the end/land location.
+	 * @return true if the reverse is more items away.
+	 */
+	bool reverseIsFurther() const;
 
 	/**
 	 * @brief function to call regularly to do background work

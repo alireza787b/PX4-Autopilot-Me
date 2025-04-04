@@ -66,6 +66,7 @@ EKF2::EKF2(bool multi_mode, const px4::wq_config_t &config, bool replay_mode):
 	_param_ekf2_predict_us(_params->filter_update_interval_us),
 	_param_ekf2_delay_max(_params->delay_max_ms),
 	_param_ekf2_imu_ctrl(_params->imu_ctrl),
+	_param_ekf2_vel_lim(_params->velocity_limit),
 #if defined(CONFIG_EKF2_AUXVEL)
 	_param_ekf2_avel_delay(_params->auxvel_delay_ms),
 #endif // CONFIG_EKF2_AUXVEL
@@ -416,7 +417,7 @@ int EKF2::print_status(bool verbose)
 {
 	PX4_INFO_RAW("ekf2:%d EKF dt: %.4fs, attitude: %d, local position: %d, global position: %d\n",
 		     _instance, (double)_ekf.get_dt_ekf_avg(), _ekf.attitude_valid(),
-		     _ekf.local_position_is_valid(), _ekf.global_position_is_valid());
+		     _ekf.isLocalHorizontalPositionValid(), _ekf.isGlobalHorizontalPositionValid());
 
 	perf_print_counter(_ekf_update_perf);
 	perf_print_counter(_msg_missed_imu_perf);
@@ -532,7 +533,8 @@ void EKF2::Run()
 			} else if (vehicle_command.command == vehicle_command_s::VEHICLE_CMD_EXTERNAL_POSITION_ESTIMATE) {
 
 				if ((_ekf.control_status_flags().wind_dead_reckoning || _ekf.control_status_flags().inertial_dead_reckoning
-				     || (!_ekf.control_status_flags().in_air && !_ekf.control_status_flags().gps)) && PX4_ISFINITE(vehicle_command.param2)
+				     || (!_ekf.control_status_flags().in_air && !_ekf.control_status_flags().gnss_pos))
+				    && PX4_ISFINITE(vehicle_command.param2)
 				    && PX4_ISFINITE(vehicle_command.param5) && PX4_ISFINITE(vehicle_command.param6)
 				   ) {
 
@@ -744,6 +746,7 @@ void EKF2::Run()
 		ekf2_timestamps_s ekf2_timestamps {
 			.timestamp = now,
 			.airspeed_timestamp_rel = ekf2_timestamps_s::RELATIVE_TIMESTAMP_INVALID,
+			.airspeed_validated_timestamp_rel = ekf2_timestamps_s::RELATIVE_TIMESTAMP_INVALID,
 			.distance_sensor_timestamp_rel = ekf2_timestamps_s::RELATIVE_TIMESTAMP_INVALID,
 			.optical_flow_timestamp_rel = ekf2_timestamps_s::RELATIVE_TIMESTAMP_INVALID,
 			.vehicle_air_data_timestamp_rel = ekf2_timestamps_s::RELATIVE_TIMESTAMP_INVALID,
@@ -1164,32 +1167,31 @@ void EKF2::PublishEventFlags(const hrt_abstime &timestamp)
 
 void EKF2::PublishGlobalPosition(const hrt_abstime &timestamp)
 {
-	if (_ekf.global_position_is_valid()) {
-		const Vector3f position{_ekf.getPosition()};
-
+	if (_ekf.global_origin_valid() && _ekf.control_status().flags.yaw_align) {
 		// generate and publish global position data
 		vehicle_global_position_s global_pos{};
 		global_pos.timestamp_sample = timestamp;
 
-		// Position of local NED origin in GPS / WGS84 frame
-		_ekf.global_origin().reproject(position(0), position(1), global_pos.lat, global_pos.lon);
+		// Position GPS / WGS84 frame
+		const LatLonAlt lla = _ekf.getLatLonAlt();
+		global_pos.lat = lla.latitude_deg();
+		global_pos.lon = lla.longitude_deg();
+		global_pos.lat_lon_valid = _ekf.isGlobalHorizontalPositionValid();
 
-		global_pos.alt = -position(2) + _ekf.getEkfGlobalOriginAltitude(); // Altitude AMSL in meters
+		global_pos.alt = lla.altitude();
+		global_pos.alt_valid = _ekf.isGlobalVerticalPositionValid();
+
 #if defined(CONFIG_EKF2_GNSS)
 		global_pos.alt_ellipsoid = altAmslToEllipsoid(global_pos.alt);
-#else
-		global_pos.alt_ellipsoid = global_pos.alt;
 #endif
 
-		// delta_alt, alt_reset_counter
-		//  global altitude has opposite sign of local down position
+		// global altitude has opposite sign of local down position
 		float delta_z = 0.f;
 		uint8_t z_reset_counter = 0;
 		_ekf.get_posD_reset(&delta_z, &z_reset_counter);
 		global_pos.delta_alt = -delta_z;
 		global_pos.alt_reset_counter = z_reset_counter;
 
-		// lat_lon_reset_counter
 		float delta_xy[2] {};
 		uint8_t xy_reset_counter = 0;
 		_ekf.get_posNE_reset(delta_xy, &xy_reset_counter);
@@ -1197,16 +1199,11 @@ void EKF2::PublishGlobalPosition(const hrt_abstime &timestamp)
 
 		_ekf.get_ekf_gpos_accuracy(&global_pos.eph, &global_pos.epv);
 
-		global_pos.terrain_alt = NAN;
-		global_pos.terrain_alt_valid = false;
-
 #if defined(CONFIG_EKF2_TERRAIN)
 
-		if (_ekf.isTerrainEstimateValid()) {
-			// Terrain altitude in m, WGS84
-			global_pos.terrain_alt = _ekf.getEkfGlobalOriginAltitude() - _ekf.getTerrainVertPos();
-			global_pos.terrain_alt_valid = true;
-		}
+		// Terrain altitude in m, WGS84
+		global_pos.terrain_alt = _ekf.getEkfGlobalOriginAltitude() - _ekf.getTerrainVertPos();
+		global_pos.terrain_alt_valid = _ekf.isTerrainEstimateValid();
 
 		float delta_hagl = 0.f;
 		_ekf.get_hagl_reset(&delta_hagl, &global_pos.terrain_reset_counter);
@@ -1561,12 +1558,13 @@ void EKF2::PublishLocalPosition(const hrt_abstime &timestamp)
 
 	// Acceleration of body origin in local frame
 	const Vector3f vel_deriv{_ekf.getVelocityDerivative()};
+	_ekf.resetVelocityDerivativeAccumulation();
 	lpos.ax = vel_deriv(0);
 	lpos.ay = vel_deriv(1);
 	lpos.az = vel_deriv(2);
 
-	lpos.xy_valid = _ekf.local_position_is_valid();
-	lpos.v_xy_valid = _ekf.local_position_is_valid();
+	lpos.xy_valid = _ekf.isLocalHorizontalPositionValid();
+	lpos.v_xy_valid = _ekf.isLocalHorizontalPositionValid();
 
 	// TODO: some modules (e.g.: mc_pos_control) don't handle v_z_valid != z_valid properly
 	lpos.z_valid = _ekf.isLocalVerticalPositionValid() || _ekf.isLocalVerticalVelocityValid();
@@ -1632,7 +1630,7 @@ void EKF2::PublishLocalPosition(const hrt_abstime &timestamp)
 			      || _ekf.control_status_flags().wind_dead_reckoning;
 
 	// get control limit information
-	_ekf.get_ekf_ctrl_limits(&lpos.vxy_max, &lpos.vz_max, &lpos.hagl_min, &lpos.hagl_max);
+	_ekf.get_ekf_ctrl_limits(&lpos.vxy_max, &lpos.vz_max, &lpos.hagl_min, &lpos.hagl_max_z, &lpos.hagl_max_xy);
 
 	// convert NaN to INFINITY
 	if (!PX4_ISFINITE(lpos.vxy_max)) {
@@ -1647,8 +1645,12 @@ void EKF2::PublishLocalPosition(const hrt_abstime &timestamp)
 		lpos.hagl_min = INFINITY;
 	}
 
-	if (!PX4_ISFINITE(lpos.hagl_max)) {
-		lpos.hagl_max = INFINITY;
+	if (!PX4_ISFINITE(lpos.hagl_max_z)) {
+		lpos.hagl_max_z = INFINITY;
+	}
+
+	if (!PX4_ISFINITE(lpos.hagl_max_xy)) {
+		lpos.hagl_max_xy = INFINITY;
 	}
 
 	// publish vehicle local position data
@@ -1891,7 +1893,7 @@ void EKF2::PublishStatusFlags(const hrt_abstime &timestamp)
 		status_flags.control_status_changes   = _filter_control_status_changes;
 		status_flags.cs_tilt_align            = _ekf.control_status_flags().tilt_align;
 		status_flags.cs_yaw_align             = _ekf.control_status_flags().yaw_align;
-		status_flags.cs_gps                   = _ekf.control_status_flags().gps;
+		status_flags.cs_gnss_pos              = _ekf.control_status_flags().gnss_pos;
 		status_flags.cs_opt_flow              = _ekf.control_status_flags().opt_flow;
 		status_flags.cs_mag_hdg               = _ekf.control_status_flags().mag_hdg;
 		status_flags.cs_mag_3d                = _ekf.control_status_flags().mag_3D;
@@ -1932,6 +1934,8 @@ void EKF2::PublishStatusFlags(const hrt_abstime &timestamp)
 		status_flags.cs_opt_flow_terrain    = _ekf.control_status_flags().opt_flow_terrain;
 		status_flags.cs_valid_fake_pos      = _ekf.control_status_flags().valid_fake_pos;
 		status_flags.cs_constant_pos        = _ekf.control_status_flags().constant_pos;
+		status_flags.cs_baro_fault	    = _ekf.control_status_flags().baro_fault;
+		status_flags.cs_gnss_vel            = _ekf.control_status_flags().gnss_vel;
 
 		status_flags.fault_status_changes     = _filter_fault_status_changes;
 		status_flags.fs_bad_mag_x             = _ekf.fault_status_flags().bad_mag_x;
@@ -2080,6 +2084,9 @@ void EKF2::UpdateAirspeedSample(ekf2_timestamps_s &ekf2_timestamps)
 			}
 
 			_airspeed_validated_timestamp_last = airspeed_validated.timestamp;
+
+			ekf2_timestamps.airspeed_validated_timestamp_rel = (int16_t)((int64_t)airspeed_validated.timestamp / 100 -
+					(int64_t)ekf2_timestamps.timestamp / 100);
 		}
 
 	} else if (((ekf2_timestamps.timestamp - _airspeed_validated_timestamp_last) > 3_s) && _airspeed_sub.updated()) {
@@ -2190,26 +2197,26 @@ bool EKF2::UpdateExtVisionSample(ekf2_timestamps_s &ekf2_timestamps)
 		const Vector3f ev_odom_vel(ev_odom.velocity);
 		const Vector3f ev_odom_vel_var(ev_odom.velocity_variance);
 
+		bool velocity_frame_valid = false;
+
+		switch (ev_odom.velocity_frame) {
+		case vehicle_odometry_s::VELOCITY_FRAME_NED:
+			ev_data.vel_frame = VelocityFrame::LOCAL_FRAME_NED;
+			velocity_frame_valid = true;
+			break;
+
+		case vehicle_odometry_s::VELOCITY_FRAME_FRD:
+			ev_data.vel_frame = VelocityFrame::LOCAL_FRAME_FRD;
+			velocity_frame_valid = true;
+			break;
+
+		case vehicle_odometry_s::VELOCITY_FRAME_BODY_FRD:
+			ev_data.vel_frame = VelocityFrame::BODY_FRAME_FRD;
+			velocity_frame_valid = true;
+			break;
+		}
+
 		if (ev_odom_vel.isAllFinite()) {
-			bool velocity_frame_valid = false;
-
-			switch (ev_odom.velocity_frame) {
-			case vehicle_odometry_s::VELOCITY_FRAME_NED:
-				ev_data.vel_frame = VelocityFrame::LOCAL_FRAME_NED;
-				velocity_frame_valid = true;
-				break;
-
-			case vehicle_odometry_s::VELOCITY_FRAME_FRD:
-				ev_data.vel_frame = VelocityFrame::LOCAL_FRAME_FRD;
-				velocity_frame_valid = true;
-				break;
-
-			case vehicle_odometry_s::VELOCITY_FRAME_BODY_FRD:
-				ev_data.vel_frame = VelocityFrame::BODY_FRAME_FRD;
-				velocity_frame_valid = true;
-				break;
-			}
-
 			if (velocity_frame_valid) {
 				ev_data.vel = ev_odom_vel;
 
@@ -2234,21 +2241,21 @@ bool EKF2::UpdateExtVisionSample(ekf2_timestamps_s &ekf2_timestamps)
 		const Vector3f ev_odom_pos(ev_odom.position);
 		const Vector3f ev_odom_pos_var(ev_odom.position_variance);
 
+		bool position_frame_valid = false;
+
+		switch (ev_odom.pose_frame) {
+		case vehicle_odometry_s::POSE_FRAME_NED:
+			ev_data.pos_frame = PositionFrame::LOCAL_FRAME_NED;
+			position_frame_valid = true;
+			break;
+
+		case vehicle_odometry_s::POSE_FRAME_FRD:
+			ev_data.pos_frame = PositionFrame::LOCAL_FRAME_FRD;
+			position_frame_valid = true;
+			break;
+		}
+
 		if (ev_odom_pos.isAllFinite()) {
-			bool position_frame_valid = false;
-
-			switch (ev_odom.pose_frame) {
-			case vehicle_odometry_s::POSE_FRAME_NED:
-				ev_data.pos_frame = PositionFrame::LOCAL_FRAME_NED;
-				position_frame_valid = true;
-				break;
-
-			case vehicle_odometry_s::POSE_FRAME_FRD:
-				ev_data.pos_frame = PositionFrame::LOCAL_FRAME_FRD;
-				position_frame_valid = true;
-				break;
-			}
-
 			if (position_frame_valid) {
 				ev_data.pos = ev_odom_pos;
 
@@ -2408,6 +2415,15 @@ void EKF2::UpdateGpsSample(ekf2_timestamps_s &ekf2_timestamps)
 
 		} else {
 			return; //TODO: change and set to NAN
+		}
+
+		if (fabsf(_param_ekf2_gps_yaw_off.get()) > 0.f) {
+			if (!PX4_ISFINITE(vehicle_gps_position.heading_offset) && PX4_ISFINITE(vehicle_gps_position.heading)) {
+				// Apply offset
+				float yaw_offset = matrix::wrap_pi(math::radians(_param_ekf2_gps_yaw_off.get()));
+				vehicle_gps_position.heading_offset = yaw_offset;
+				vehicle_gps_position.heading = matrix::wrap_pi(vehicle_gps_position.heading - yaw_offset);
+			}
 		}
 
 		const float altitude_amsl = static_cast<float>(vehicle_gps_position.altitude_msl_m);
