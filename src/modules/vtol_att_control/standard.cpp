@@ -75,6 +75,7 @@ void Standard::update_vtol_state()
 		// Failsafe event, engage mc motors immediately
 		_vtol_mode = vtol_mode::MC_MODE;
 		_pusher_throttle = 0.0f;
+		_fw_mode_transition_pitch = NAN;
 
 	} else if (!_attc->is_fixed_wing_requested()) {
 
@@ -83,17 +84,20 @@ void Standard::update_vtol_state()
 			// in mc mode
 			_vtol_mode = vtol_mode::MC_MODE;
 			mc_weight = 1.0f;
+			_fw_mode_transition_pitch = NAN;
 
 		} else if (_vtol_mode == vtol_mode::FW_MODE) {
 			// Regular backtransition
 			resetTransitionStates();
 			_vtol_mode = vtol_mode::TRANSITION_TO_MC;
+			_fw_mode_transition_pitch = NAN;
 
 		} else if (_vtol_mode == vtol_mode::TRANSITION_TO_FW) {
 			// failsafe back to mc mode
 			_vtol_mode = vtol_mode::MC_MODE;
 			mc_weight = 1.0f;
 			_pusher_throttle = 0.0f;
+			_fw_mode_transition_pitch = NAN;
 
 		} else if (_vtol_mode == vtol_mode::TRANSITION_TO_MC) {
 			// speed exit condition: use ground if valid, otherwise airspeed
@@ -123,6 +127,7 @@ void Standard::update_vtol_state()
 			 * unsafe flying state. */
 			resetTransitionStates();
 			_vtol_mode = vtol_mode::TRANSITION_TO_FW;
+			_fw_mode_transition_pitch = NAN;
 
 		} else if (_vtol_mode == vtol_mode::FW_MODE) {
 			// in fw mode
@@ -136,6 +141,7 @@ void Standard::update_vtol_state()
 
 				// don't set pusher throttle here as it's being ramped up elsewhere
 				_trans_finished_ts = hrt_absolute_time();
+				_fw_mode_transition_pitch = Eulerf(Quatf(_v_att_sp->q_d)).theta();
 			}
 		}
 	}
@@ -357,7 +363,14 @@ void Standard::fill_actuator_outputs()
 		_torque_setpoint_1->xyz[0] = _vehicle_torque_setpoint_virtual_fw->xyz[0];
 		_torque_setpoint_1->xyz[1] = _vehicle_torque_setpoint_virtual_fw->xyz[1];
 		_torque_setpoint_1->xyz[2] = _vehicle_torque_setpoint_virtual_fw->xyz[2];
-		_thrust_setpoint_0->xyz[0] = _vehicle_thrust_setpoint_virtual_fw->xyz[0];
+
+		if (shouldBlendThrottleAfterFrontTransition() && PX4_ISFINITE(_fw_mode_transition_throttle)) {
+			_thrust_setpoint_0->xyz[0] = _fw_mode_transition_throttle;
+
+		} else {
+			_thrust_setpoint_0->xyz[0] = _vehicle_thrust_setpoint_virtual_fw->xyz[0];
+		}
+
 		break;
 	}
 }
@@ -366,11 +379,28 @@ void
 Standard::waiting_on_tecs()
 {
 	// keep thrust from transition
-	_v_att_sp->thrust_body[0] = _pusher_throttle;
+	_fw_mode_transition_throttle = _pusher_throttle;
+	_v_att_sp->thrust_body[0] = _fw_mode_transition_throttle;
+	blendPitchAfterFrontTransition(0.0f);
 };
 
 void Standard::blendThrottleAfterFrontTransition(float scale)
 {
-	const float tecs_throttle = _v_att_sp->thrust_body[0];
-	_v_att_sp->thrust_body[0] = scale * tecs_throttle + (1.0f - scale) * _pusher_throttle;
+	const float tecs_throttle = PX4_ISFINITE(_vehicle_thrust_setpoint_virtual_fw->xyz[0]) ?
+				    _vehicle_thrust_setpoint_virtual_fw->xyz[0] : _v_att_sp->thrust_body[0];
+	_fw_mode_transition_throttle = scale * tecs_throttle + (1.0f - scale) * _pusher_throttle;
+	_v_att_sp->thrust_body[0] = _fw_mode_transition_throttle;
+	blendPitchAfterFrontTransition(scale);
+}
+
+void Standard::blendPitchAfterFrontTransition(float scale)
+{
+	if (!PX4_ISFINITE(_fw_mode_transition_pitch)) {
+		return;
+	}
+
+	const Eulerf fw_attitude_setpoint(Quatf(_v_att_sp->q_d));
+	const float pitch_body = scale * fw_attitude_setpoint.theta() + (1.0f - scale) * _fw_mode_transition_pitch;
+	const Quatf q_sp(Eulerf(fw_attitude_setpoint.phi(), pitch_body, fw_attitude_setpoint.psi()));
+	q_sp.copyTo(_v_att_sp->q_d);
 }

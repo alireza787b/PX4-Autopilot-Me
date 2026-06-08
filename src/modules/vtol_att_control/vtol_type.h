@@ -358,13 +358,14 @@ protected:
 
 				       )
 
-private:
+protected:
 	hrt_abstime _throttle_blend_start_ts{0};	// time at which we start blending between transition throttle and fixed wing throttle
 
-	bool shouldBlendThrottleAfterFrontTransition() { return _throttle_blend_start_ts != 0; };
+	bool shouldBlendThrottleAfterFrontTransition() const { return _throttle_blend_start_ts != 0; };
 
 	void stopBlendingThrottleAfterFrontTransition() { _throttle_blend_start_ts = 0; }
 
+private:
 	/**
 	 * @return Transition time scale factor for density.
 	*/

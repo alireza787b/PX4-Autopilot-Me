@@ -77,8 +77,11 @@ private:
 	float _pusher_throttle{0.0f};
 	float _airspeed_trans_blend_margin{0.0f};
 	hrt_abstime _last_time_pusher_transition_update{0};
+	float _fw_mode_transition_throttle{NAN};
+	float _fw_mode_transition_pitch{NAN};
 
 	void parameters_update() override;
+	void blendPitchAfterFrontTransition(float scale);
 
 	DEFINE_PARAMETERS_CUSTOM_PARENT(VtolType,
 					(ParamFloat<px4::params::VT_PSHER_SLEW>) _param_vt_psher_slew,
