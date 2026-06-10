@@ -223,10 +223,10 @@ param set-default FW_AIRSPD_TRIM 27
 param set-default FW_AIRSPD_MAX 36
 param set-default FW_ARSP_SCALE_EN 0
 
-param set-default FW_THR_TRIM 0.14
-param set-default FW_THR_MIN 0.00
+param set-default FW_THR_TRIM 0.18
+param set-default FW_THR_MIN 0.08
 param set-default FW_THR_MAX 0.50
-param set-default FW_THR_SLEW_MAX 0.20
+param set-default FW_THR_SLEW_MAX 0.24
 
 param set-default FW_T_CLMB_MAX 3.5
 param set-default FW_T_SINK_MAX 2.4
