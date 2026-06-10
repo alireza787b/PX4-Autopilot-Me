@@ -233,7 +233,8 @@ void Tailsitter::update_transition_state()
 	_v_att_sp->thrust_body[2] = _mc_virtual_att_sp->thrust_body[2];
 
 	if (_vtol_mode == vtol_mode::TRANSITION_BACK) {
-		const float progress = math::constrain(_time_since_trans_start / B_TRANS_THRUST_BLENDING_DURATION, 0.f, 1.f);
+		const float thrust_blend_duration = math::max(_param_vt_b_trans_dur.get(), MIN_B_TRANS_THRUST_BLENDING_DURATION);
+		const float progress = math::constrain(_time_since_trans_start / thrust_blend_duration, 0.f, 1.f);
 		blendThrottleBeginningBackTransition(progress);
 	}
 
