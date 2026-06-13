@@ -179,14 +179,6 @@ void FwLateralLongitudinalControl::Run()
 
 		update_control_state(now);
 
-		if (_control_mode_sub.get().flag_control_manual_enabled && _control_mode_sub.get().flag_control_altitude_enabled
-		    && _local_pos.z_reset_counter != _z_reset_counter) {
-			if (_control_mode_sub.get().flag_control_altitude_enabled && _local_pos.z_reset_counter != _z_reset_counter) {
-				// make TECS accept step in altitude and demanded altitude
-				_tecs.handle_alt_step(_long_control_state.altitude_msl, _long_control_state.height_rate);
-			}
-		}
-
 		const bool should_run = (_control_mode_sub.get().flag_control_position_enabled ||
 					 _control_mode_sub.get().flag_control_velocity_enabled ||
 					 _control_mode_sub.get().flag_control_acceleration_enabled ||
@@ -194,6 +186,20 @@ void FwLateralLongitudinalControl::Run()
 					 _control_mode_sub.get().flag_control_climb_rate_enabled) &&
 					(_vehicle_status_sub.get().vehicle_type == vehicle_status_s::VEHICLE_TYPE_FIXED_WING
 					 || _vehicle_status_sub.get().in_transition_mode);
+
+		const bool altitude_frame_valid = _local_pos.z_global && PX4_ISFINITE(_local_pos.ref_alt);
+		const bool altitude_frame_changed = (altitude_frame_valid != _altitude_frame_valid)
+						    || (altitude_frame_valid && (_local_pos.ref_timestamp != _altitude_frame_ref_timestamp));
+		const bool altitude_reset = _local_pos.z_reset_counter != _z_reset_counter;
+
+		if (should_run && (altitude_frame_changed || altitude_reset)) {
+			// Keep TECS in the same altitude frame as vehicle_local_position, including
+			// the startup transition from local z to AMSL once ref_alt becomes valid.
+			_tecs.handle_alt_step(_long_control_state.altitude_msl, _long_control_state.height_rate);
+		}
+
+		_altitude_frame_valid = altitude_frame_valid;
+		_altitude_frame_ref_timestamp = _local_pos.ref_timestamp;
 
 		if (should_run) {
 
