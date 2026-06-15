@@ -187,19 +187,29 @@ void FwLateralLongitudinalControl::Run()
 					(_vehicle_status_sub.get().vehicle_type == vehicle_status_s::VEHICLE_TYPE_FIXED_WING
 					 || _vehicle_status_sub.get().in_transition_mode);
 
-		const bool altitude_frame_valid = _local_pos.z_global && PX4_ISFINITE(_local_pos.ref_alt);
-		const bool altitude_frame_changed = (altitude_frame_valid != _altitude_frame_valid)
-						    || (altitude_frame_valid && (_local_pos.ref_timestamp != _altitude_frame_ref_timestamp));
-		const bool altitude_reset = _local_pos.z_reset_counter != _z_reset_counter;
+		const bool tecs_should_run = should_run
+					     && !(_vehicle_status_sub.get().is_vtol
+						  && (_vehicle_status_sub.get().vehicle_type == vehicle_status_s::VEHICLE_TYPE_ROTARY_WING
+						      || _vehicle_status_sub.get().in_transition_mode));
 
-		if (should_run && (altitude_frame_changed || altitude_reset)) {
-			// Keep TECS in the same altitude frame as vehicle_local_position, including
-			// the startup transition from local z to AMSL once ref_alt becomes valid.
-			_tecs.handle_alt_step(_long_control_state.altitude_msl, _long_control_state.height_rate);
+		if (tecs_should_run) {
+			const bool altitude_frame_valid = _local_pos.z_global && PX4_ISFINITE(_local_pos.ref_alt);
+			const bool altitude_frame_changed = altitude_frame_valid
+							    && (!_altitude_frame_valid
+								|| _local_pos.ref_timestamp != _altitude_frame_ref_timestamp);
+			const bool altitude_reset = _local_pos.z_reset_counter != _z_reset_counter;
+
+			if (altitude_frame_changed || altitude_reset) {
+				_tecs.handle_alt_step(_long_control_state.altitude_msl, _long_control_state.height_rate);
+			}
+
+			_altitude_frame_valid = altitude_frame_valid;
+			_altitude_frame_ref_timestamp = altitude_frame_valid ? _local_pos.ref_timestamp : UINT64_C(0);
+
+		} else {
+			_altitude_frame_valid = false;
+			_altitude_frame_ref_timestamp = UINT64_C(0);
 		}
-
-		_altitude_frame_valid = altitude_frame_valid;
-		_altitude_frame_ref_timestamp = _local_pos.ref_timestamp;
 
 		if (should_run) {
 
