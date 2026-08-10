@@ -234,6 +234,31 @@ VtolAttitudeControl::quadchute(QuadchuteReason reason)
 				     "Quad-chute triggered due to maximum roll angle exceeded");
 			break;
 
+		case QuadchuteReason::TransitionAirspeedInvalid:
+			events::send(events::ID("vtol_att_ctrl_quadchute_airspeed_invalid"), events::Log::Critical,
+				     "Quad-chute triggered: transition airspeed invalid");
+			break;
+
+		case QuadchuteReason::TransitionRecoveryAltitude:
+			events::send(events::ID("vtol_att_ctrl_quadchute_recovery_alt"), events::Log::Critical,
+				     "Quad-chute triggered: transition recovery margin exhausted");
+			break;
+
+		case QuadchuteReason::TransitionAttitudeTracking:
+			events::send(events::ID("vtol_att_ctrl_quadchute_att_tracking"), events::Log::Critical,
+				     "Quad-chute triggered: transition attitude tracking failed");
+			break;
+
+		case QuadchuteReason::TransitionControlAllocation:
+			events::send(events::ID("vtol_att_ctrl_quadchute_alloc"), events::Log::Critical,
+				     "Quad-chute triggered: transition control allocation failed");
+			break;
+
+		case QuadchuteReason::TransitionSetpointStale:
+			events::send(events::ID("vtol_att_ctrl_quadchute_sp_stale"), events::Log::Critical,
+				     "Quad-chute triggered: transition setpoint stale");
+			break;
+
 		case QuadchuteReason::None:
 			// should never get in here
 			return;
@@ -361,6 +386,8 @@ VtolAttitudeControl::Run()
 
 		_vehicle_control_mode_sub.update(&_vehicle_control_mode);
 		_vehicle_attitude_sub.update(&_vehicle_attitude);
+		_vehicle_angular_velocity_sub.update(&_vehicle_angular_velocity);
+		_control_allocator_status_sub.update(&_control_allocator_status);
 		_local_pos_sub.update(&_local_pos);
 		_local_pos_sp_sub.update(&_local_pos_sp);
 		_pos_sp_triplet_sub.update(&_pos_sp_triplet);
@@ -506,6 +533,18 @@ VtolAttitudeControl::Run()
 	}
 
 	perf_end(_loop_perf);
+}
+
+bool VtolAttitudeControl::get_fresh_physical_airspeed(float &airspeed) const
+{
+	if (!_param_fw_use_airspd.get() || !PX4_ISFINITE(_calibrated_airspeed)
+	    || _time_last_airspeed_update == 0 || hrt_elapsed_time(&_time_last_airspeed_update) > 300_ms) {
+		airspeed = NAN;
+		return false;
+	}
+
+	airspeed = _calibrated_airspeed;
+	return true;
 }
 
 int

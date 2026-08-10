@@ -48,6 +48,8 @@
 #include <drivers/drv_hrt.h>
 #include <matrix/matrix/math.hpp>
 
+#include "TailsitterDiveTransition.hpp"
+
 // [rad] Pitch threshold required for completing transition to fixed-wing in automatic transitions
 static constexpr float PITCH_THRESHOLD_AUTO_TRANSITION_TO_FW = -1.05f; // -60°
 
@@ -76,6 +78,7 @@ private:
 	enum class vtol_mode {
 		MC_MODE = 0,			/**< vtol is in multicopter mode */
 		TRANSITION_FRONT_P1,	/**< vtol is in front transition part 1 mode */
+		TRANSITION_FRONT_ABORT,	/**< controlled abort of an opt-in front transition */
 		TRANSITION_BACK,		/**< vtol is in back transition mode */
 		FW_MODE					/**< vtol is in fixed wing mode */
 	};
@@ -88,6 +91,16 @@ private:
 	matrix::Quatf _q_trans_sp;
 	matrix::Vector3f _trans_rot_axis;
 
+	TailsitterDiveTransition _dive_transition;
+	TailsitterDiveTransition::Config _dive_transition_config{};
+	bool _dive_transition_active{false};
+	bool _dive_transition_initialized{false};
+	bool _dive_handoff_active{false};
+	hrt_abstime _dive_handoff_start_ts{0};
+	float _dive_transition_thrust{0.f};
+	float _dive_handoff_thrust{0.f};
+	matrix::Vector3f _dive_handoff_torque{};
+
 	inline static const matrix::Quatf _q_fw_to_mc{matrix::Eulerf{0.f, M_PI_2_F, 0.f}};
 
 	void parameters_update() override;
@@ -96,10 +109,29 @@ private:
 	bool isPitchExceeded() override;
 	bool isRollExceeded() override;
 
+	bool diveTransitionEnabled() const;
+	void configureDiveTransition();
+	void initializeControlledAbort(TailsitterDiveTransition::AbortReason reason);
+	void updateDiveTransition();
+	void updateDiveTransitionThrust(float commanded_tilt);
+	float actualTransitionTilt() const;
+	float actualTransitionTiltRate() const;
+	float transitionAttitudeError() const;
+	float availableRecoveryHeight() const;
+	void triggerDiveAbort(TailsitterDiveTransition::AbortReason reason, bool quadchute);
+
 	matrix::Eulerf getFixedWingAttitudeEuler() const;
 
 	DEFINE_PARAMETERS_CUSTOM_PARENT(VtolType,
-					(ParamFloat<px4::params::FW_PSP_OFF>) _param_fw_psp_off
+					(ParamFloat<px4::params::FW_PSP_OFF>) _param_fw_psp_off,
+					(ParamBool<px4::params::VT_TS_DIVE_EN>) _param_vt_ts_dive_en,
+					(ParamFloat<px4::params::VT_TS_DIVE_ANG>) _param_vt_ts_dive_ang,
+					(ParamFloat<px4::params::VT_TS_DIVE_RAT>) _param_vt_ts_dive_rat,
+					(ParamFloat<px4::params::VT_TS_DIVE_THR>) _param_vt_ts_dive_thr,
+					(ParamFloat<px4::params::VT_TS_REC_ALT>) _param_vt_ts_rec_alt,
+					(ParamFloat<px4::params::VT_TS_REC_ACC>) _param_vt_ts_rec_acc,
+					(ParamFloat<px4::params::VT_TS_ABRT_RAT>) _param_vt_ts_abrt_rat,
+					(ParamFloat<px4::params::MPC_THR_HOVER>) _param_mpc_thr_hover
 				       )
 
 

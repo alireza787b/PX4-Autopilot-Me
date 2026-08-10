@@ -92,6 +92,11 @@ enum class QuadchuteReason {
 	TransitionAltitudeLoss,
 	MaximumPitchExceeded,
 	MaximumRollExceeded,
+	TransitionAirspeedInvalid,
+	TransitionRecoveryAltitude,
+	TransitionAttitudeTracking,
+	TransitionControlAllocation,
+	TransitionSetpointStale,
 };
 
 class VtolAttitudeControl;

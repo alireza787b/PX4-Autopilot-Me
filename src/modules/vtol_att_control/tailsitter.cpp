@@ -42,11 +42,253 @@
 #include "tailsitter.h"
 #include "vtol_att_control_main.h"
 
+#include <cmath>
+
 using namespace matrix;
 
 Tailsitter::Tailsitter(VtolAttitudeControl *attc) :
 	VtolType(attc)
 {
+}
+
+bool Tailsitter::diveTransitionEnabled() const
+{
+	return _param_vt_ts_dive_en.get();
+}
+
+void Tailsitter::configureDiveTransition()
+{
+	_dive_transition_config = {};
+	_dive_transition_config.max_dive_angle = math::radians(_param_vt_ts_dive_ang.get());
+	_dive_transition_config.transition_rate = math::radians(_param_vt_ts_dive_rat.get());
+	// The trajectory is acceleration limited. This reaches the configured rate in
+	// approximately 0.5 s and, importantly, keeps the horizon crossing continuous.
+	_dive_transition_config.transition_acceleration = 2.f * _dive_transition_config.transition_rate;
+	_dive_transition_config.abort_rate = math::radians(_param_vt_ts_abrt_rat.get());
+	_dive_transition_config.abort_acceleration = 2.f * _dive_transition_config.abort_rate;
+	_dive_transition_config.handoff_tilt = math::constrain(M_PI_2_F -
+					       math::radians(_param_fw_psp_off.get()), 0.f, M_PI_2_F);
+	_dive_transition_config.transition_airspeed = getTransitionAirspeed();
+	_dive_transition_config.minimum_transition_time = getMinimumFrontTransitionTime();
+	_dive_transition_config.recovery_margin = _param_vt_ts_rec_alt.get();
+	_dive_transition_config.recovery_acceleration = _param_vt_ts_rec_acc.get();
+	_dive_transition_config.attitude_error_limit = math::radians(35.f);
+	_dive_transition_config.allocation_error_limit = 0.05f;
+	_dive_transition_config.handoff_rate_limit = math::radians(30.f);
+}
+
+float Tailsitter::actualTransitionTilt() const
+{
+	if (_trans_rot_axis.norm() < FLT_EPSILON) {
+		return 0.f;
+	}
+
+	Quatf q_actual(_v_att->q);
+
+	if (!q_actual.isAllFinite() || q_actual.norm() < FLT_EPSILON) {
+		return _dive_transition.tilt();
+	}
+
+	q_actual.normalize();
+	Quatf q_relative = q_actual * _q_trans_start.inversed();
+	q_relative.normalize();
+
+	// q and -q represent the same attitude. Use the shortest relative rotation
+	// before projecting it onto the captured transition axis.
+	if (q_relative(0) < 0.f) {
+		q_relative *= -1.f;
+	}
+
+	const float tilt = AxisAnglef(q_relative).dot(_trans_rot_axis.unit());
+	return math::constrain(tilt, 0.f, M_PI_2_F + _dive_transition_config.max_dive_angle);
+}
+
+float Tailsitter::actualTransitionTiltRate() const
+{
+	if (_trans_rot_axis.norm() < FLT_EPSILON) {
+		return 0.f;
+	}
+
+	const auto *angular_velocity = _attc->get_angular_velocity();
+
+	if (angular_velocity->timestamp == 0 || hrt_elapsed_time(&angular_velocity->timestamp) > 200_ms) {
+		return 0.f;
+	}
+
+	const Vector3f body_rate(angular_velocity->xyz);
+
+	if (!body_rate.isAllFinite()) {
+		return 0.f;
+	}
+
+	const Quatf attitude(_v_att->q);
+
+	if (!attitude.isAllFinite() || attitude.norm() < FLT_EPSILON) {
+		return 0.f;
+	}
+
+	const Vector3f earth_rate = attitude.rotateVector(body_rate);
+	return earth_rate.dot(_trans_rot_axis.unit());
+}
+
+float Tailsitter::transitionAttitudeError() const
+{
+	Quatf q_actual(_v_att->q);
+	Quatf q_setpoint(_q_trans_sp);
+
+	if (!q_actual.isAllFinite() || !q_setpoint.isAllFinite()
+	    || q_actual.norm() < FLT_EPSILON || q_setpoint.norm() < FLT_EPSILON) {
+		return NAN;
+	}
+
+	q_actual.normalize();
+	q_setpoint.normalize();
+
+	const float dot = math::constrain(fabsf(q_actual.dot(q_setpoint)), 0.f, 1.f);
+	return 2.f * acosf(dot);
+}
+
+float Tailsitter::availableRecoveryHeight() const
+{
+	float distance_to_ground = NAN;
+
+	if (_local_pos->dist_bottom_valid && PX4_ISFINITE(_local_pos->dist_bottom)) {
+		distance_to_ground = _local_pos->dist_bottom;
+
+	} else if (_local_pos->z_valid && PX4_ISFINITE(_attc->get_home_position_z())) {
+		distance_to_ground = -(_local_pos->z - _attc->get_home_position_z());
+
+	} else if (_local_pos->z_valid && PX4_ISFINITE(_local_pos->z)) {
+		distance_to_ground = -_local_pos->z;
+	}
+
+	if (!PX4_ISFINITE(distance_to_ground)) {
+		return NAN;
+	}
+
+	return distance_to_ground - math::max(_param_vt_fw_min_alt.get(), 0.f);
+}
+
+void Tailsitter::initializeControlledAbort(TailsitterDiveTransition::AbortReason reason)
+{
+	if (!_dive_transition_initialized || _vtol_mode == vtol_mode::TRANSITION_FRONT_ABORT) {
+		return;
+	}
+
+	_dive_transition.startAbort(actualTransitionTilt(), actualTransitionTiltRate(), reason);
+	_vtol_mode = vtol_mode::TRANSITION_FRONT_ABORT;
+	_transition_start_timestamp = hrt_absolute_time();
+	_time_since_trans_start = 0.f;
+}
+
+void Tailsitter::triggerDiveAbort(TailsitterDiveTransition::AbortReason reason, bool quadchute)
+{
+	if (quadchute) {
+		QuadchuteReason quadchute_reason = QuadchuteReason::TransitionAirspeedInvalid;
+
+		switch (reason) {
+		case TailsitterDiveTransition::AbortReason::AirspeedInvalid:
+			quadchute_reason = QuadchuteReason::TransitionAirspeedInvalid;
+			break;
+
+		case TailsitterDiveTransition::AbortReason::RecoveryAltitude:
+			quadchute_reason = QuadchuteReason::TransitionRecoveryAltitude;
+			break;
+
+		case TailsitterDiveTransition::AbortReason::AttitudeTracking:
+			quadchute_reason = QuadchuteReason::TransitionAttitudeTracking;
+			break;
+
+		case TailsitterDiveTransition::AbortReason::ControlAllocation:
+			quadchute_reason = QuadchuteReason::TransitionControlAllocation;
+			break;
+
+		case TailsitterDiveTransition::AbortReason::SetpointStale:
+			quadchute_reason = QuadchuteReason::TransitionSetpointStale;
+			break;
+
+		default:
+			quadchute_reason = QuadchuteReason::ExternalCommand;
+			break;
+		}
+
+		_attc->quadchute(quadchute_reason);
+	}
+
+	initializeControlledAbort(reason);
+}
+
+void Tailsitter::updateDiveTransitionThrust(float commanded_tilt)
+{
+	const float hover_thrust = math::constrain(_param_mpc_thr_hover.get(), 0.1f, 0.8f);
+	float target_thrust = _param_vt_ts_dive_thr.get();
+
+	if (_vtol_mode == vtol_mode::TRANSITION_FRONT_ABORT) {
+		const float low_thrust = 0.5f * hover_thrust;
+
+		if (commanded_tilt >= M_PI_2_F) {
+			target_thrust = low_thrust;
+
+		} else {
+			const float recovery_progress = math::constrain((M_PI_2_F - commanded_tilt) / math::radians(30.f), 0.f, 1.f);
+			const bool mc_setpoint_fresh = _mc_virtual_att_sp->timestamp != 0
+						       && hrt_elapsed_time(&_mc_virtual_att_sp->timestamp) <= 1_s;
+			const float mc_thrust = mc_setpoint_fresh && PX4_ISFINITE(_vehicle_thrust_setpoint_virtual_mc->xyz[2])
+						? math::constrain(-_vehicle_thrust_setpoint_virtual_mc->xyz[2], 0.f, 1.f)
+						: hover_thrust;
+			target_thrust = low_thrust + recovery_progress * (math::max(mc_thrust, hover_thrust) - low_thrust);
+		}
+	}
+
+	target_thrust = math::constrain(target_thrust, 0.1f, 0.9f);
+	const float slew_rate = 2.f; // normalized collective per second
+	_dive_transition_thrust = math::constrain(target_thrust,
+				  _dive_transition_thrust - slew_rate * _transition_dt,
+				  _dive_transition_thrust + slew_rate * _transition_dt);
+	_v_att_sp->thrust_body[2] = -_dive_transition_thrust;
+}
+
+void Tailsitter::updateDiveTransition()
+{
+	TailsitterDiveTransition::Input input{};
+	input.dt = _transition_dt;
+	input.elapsed = _time_since_trans_start;
+	input.actual_tilt = actualTransitionTilt();
+	input.attitude_error = transitionAttitudeError();
+	const auto *angular_velocity = _attc->get_angular_velocity();
+	input.angular_rate = (angular_velocity->timestamp != 0
+			      && hrt_elapsed_time(&angular_velocity->timestamp) <= 200_ms
+			      && PX4_ISFINITE(angular_velocity->xyz[0])
+			      && PX4_ISFINITE(angular_velocity->xyz[1])
+			      && PX4_ISFINITE(angular_velocity->xyz[2]))
+			     ? Vector3f(angular_velocity->xyz).norm() : NAN;
+	input.available_recovery_height = availableRecoveryHeight();
+	input.vertical_speed_down = (_local_pos->v_z_valid && PX4_ISFINITE(_local_pos->vz)) ? math::max(_local_pos->vz, 0.f) : NAN;
+
+	float physical_airspeed = NAN;
+	input.airspeed_valid = _attc->get_fresh_physical_airspeed(physical_airspeed);
+	input.airspeed = physical_airspeed;
+	input.handoff_ready = _fw_virtual_att_sp->timestamp != 0
+			      && hrt_elapsed_time(&_fw_virtual_att_sp->timestamp) <= 1_s;
+
+	const auto *allocator_status = _attc->get_control_allocator_status();
+	input.allocation_status_valid = allocator_status->timestamp != 0
+					&& hrt_elapsed_time(&allocator_status->timestamp) < 500_ms;
+	input.unallocated_pitch_torque = allocator_status->unallocated_torque[1];
+
+	auto output = _dive_transition.update(input);
+
+	if (output.request_abort) {
+		triggerDiveAbort(output.abort_reason, true);
+		output = _dive_transition.update(input);
+	}
+
+	_q_trans_sp = Quatf(AxisAnglef(_trans_rot_axis, output.tilt)) * _q_trans_start;
+	_q_trans_sp.normalize();
+	updateDiveTransitionThrust(output.tilt);
+
+	_v_att_sp->timestamp = hrt_absolute_time();
+	_q_trans_sp.copyTo(_v_att_sp->q_d);
 }
 
 void
@@ -108,12 +350,27 @@ void Tailsitter::update_vtol_state()
 
 
 	if (_vtol_vehicle_status->fixed_wing_system_failure) {
-		// Failsafe event, switch to MC mode immediately
-		if (_vtol_mode != vtol_mode::MC_MODE) {
-			_transition_start_timestamp = hrt_absolute_time();
-		}
+		// Keep the opt-in dive transition on the MC controller while it rotates
+		// back to hover. The stock path remains an immediate MC switch.
+		if (_dive_transition_active && _dive_transition_initialized
+		    && (_vtol_mode == vtol_mode::TRANSITION_FRONT_P1 || _vtol_mode == vtol_mode::TRANSITION_FRONT_ABORT)) {
+			if (_vtol_mode == vtol_mode::TRANSITION_FRONT_ABORT
+			    && _dive_transition.phase() == TailsitterDiveTransition::Phase::Recovered) {
+				_vtol_mode = vtol_mode::MC_MODE;
+				_dive_transition_active = false;
+				_dive_transition_initialized = false;
 
-		_vtol_mode = vtol_mode::MC_MODE;
+			} else {
+				initializeControlledAbort(TailsitterDiveTransition::AbortReason::External);
+			}
+
+		} else {
+			if (_vtol_mode != vtol_mode::MC_MODE) {
+				_transition_start_timestamp = hrt_absolute_time();
+			}
+
+			_vtol_mode = vtol_mode::MC_MODE;
+		}
 
 	} else if (!_attc->is_fixed_wing_requested()) {
 
@@ -127,8 +384,24 @@ void Tailsitter::update_vtol_state()
 			break;
 
 		case vtol_mode::TRANSITION_FRONT_P1:
-			// failsafe into multicopter mode
-			_vtol_mode = vtol_mode::MC_MODE;
+			if (_dive_transition_active && _dive_transition_initialized) {
+				// A commanded cancellation is handled by the same bounded
+				// quaternion recovery as a transition failure.
+				initializeControlledAbort(TailsitterDiveTransition::AbortReason::External);
+
+			} else {
+				_vtol_mode = vtol_mode::MC_MODE;
+			}
+
+			break;
+
+		case vtol_mode::TRANSITION_FRONT_ABORT:
+			if (_dive_transition.phase() == TailsitterDiveTransition::Phase::Recovered) {
+				_vtol_mode = vtol_mode::MC_MODE;
+				_dive_transition_active = false;
+				_dive_transition_initialized = false;
+			}
+
 			break;
 
 		case vtol_mode::TRANSITION_BACK:
@@ -148,6 +421,9 @@ void Tailsitter::update_vtol_state()
 		case vtol_mode::MC_MODE:
 			// initialise a front transition
 			_vtol_mode = vtol_mode::TRANSITION_FRONT_P1;
+			_dive_transition_active = diveTransitionEnabled();
+			_dive_transition_initialized = false;
+			_dive_handoff_active = false;
 			resetTransitionStates();
 			break;
 
@@ -155,14 +431,32 @@ void Tailsitter::update_vtol_state()
 			break;
 
 		case vtol_mode::TRANSITION_FRONT_P1: {
+				const bool transition_complete = _dive_transition_active
+								 ? (_dive_transition.phase() == TailsitterDiveTransition::Phase::Complete)
+								 : isFrontTransitionCompleted();
 
-				if (isFrontTransitionCompleted()) {
+				if (transition_complete) {
 					_vtol_mode = vtol_mode::FW_MODE;
 					_trans_finished_ts = hrt_absolute_time();
+
+					if (_dive_transition_active) {
+						_dive_handoff_active = true;
+						_dive_handoff_start_ts = _trans_finished_ts;
+						// Capture the outputs that were actually driving the motors in
+						// transition. The virtual MC thrust may already have changed
+						// while the dive trajectory was active.
+						_dive_handoff_thrust = -_dive_transition_thrust;
+						_dive_handoff_torque = Vector3f(_vehicle_torque_setpoint_virtual_mc->xyz);
+					}
 				}
 
 				break;
 			}
+
+		case vtol_mode::TRANSITION_FRONT_ABORT:
+			// Remain in the controlled recovery even if a stale FW request is
+			// still present. Switching to MC is decided by the recovery guard.
+			break;
 
 		case vtol_mode::TRANSITION_BACK:
 			// failsafe into fixed wing mode
@@ -188,6 +482,10 @@ void Tailsitter::update_vtol_state()
 		_common_vtol_mode = mode::TRANSITION_TO_FW;
 		break;
 
+	case vtol_mode::TRANSITION_FRONT_ABORT:
+		_common_vtol_mode = mode::TRANSITION_TO_MC;
+		break;
+
 	case vtol_mode::TRANSITION_BACK:
 		_common_vtol_mode = mode::TRANSITION_TO_MC;
 		break;
@@ -202,7 +500,13 @@ void Tailsitter::update_transition_state()
 
 	// we need the incoming (virtual) mc attitude setpoints to be recent, otherwise return (means the previous setpoint stays active)
 	if (_mc_virtual_att_sp->timestamp < (now - 1_s)) {
-		return;
+		if (_dive_transition_active && _dive_transition_initialized
+		    && _vtol_mode != vtol_mode::TRANSITION_FRONT_ABORT) {
+			triggerDiveAbort(TailsitterDiveTransition::AbortReason::SetpointStale, true);
+
+		} else if (!_dive_transition_active || !_dive_transition_initialized) {
+			return;
+		}
 	}
 
 	if (!_flag_was_in_trans_mode) {
@@ -238,6 +542,23 @@ void Tailsitter::update_transition_state()
 			_q_trans_start = Eulerf(0.f, setpoint_euler.theta(), setpoint_euler.psi());
 			Vector3f x = Dcmf(Quatf(_v_att->q)) * Vector3f(1.f, 0.f, 0.f);
 			_trans_rot_axis = -x.cross(Vector3f(0.f, 0.f, -1.f));
+
+			if (_trans_rot_axis.norm() > 0.1f) {
+				_trans_rot_axis.normalize();
+
+			} else {
+				// Degenerate only when the estimated body x-axis is nearly
+				// vertical. Retain heading by using the setpoint body -y axis.
+				_trans_rot_axis = Quatf(_q_trans_start).rotateVector(Vector3f(0.f, -1.f, 0.f));
+				_trans_rot_axis.normalize();
+			}
+
+			if (_dive_transition_active) {
+				configureDiveTransition();
+				_dive_transition.start(_dive_transition_config);
+				_dive_transition_initialized = true;
+				_dive_transition_thrust = math::constrain(-_vehicle_thrust_setpoint_virtual_mc->xyz[2], 0.1f, 0.9f);
+			}
 		}
 
 		_q_trans_sp = _q_trans_start;
@@ -251,7 +572,13 @@ void Tailsitter::update_transition_state()
 					       _q_trans_sp(2) * _q_trans_sp(2) + _q_trans_sp(3) * _q_trans_sp(3), -1.f, 1.f);
 	const float tilt = acosf(cos_tilt);
 
-	if (_vtol_mode == vtol_mode::TRANSITION_FRONT_P1) {
+	if (_vtol_mode == vtol_mode::TRANSITION_FRONT_P1 && _dive_transition_active) {
+		updateDiveTransition();
+
+	} else if (_vtol_mode == vtol_mode::TRANSITION_FRONT_ABORT && _dive_transition_active) {
+		updateDiveTransition();
+
+	} else if (_vtol_mode == vtol_mode::TRANSITION_FRONT_P1) {
 
 		// calculate pitching rate - and constrain to at least 0.1s transition time
 		const float trans_pitch_rate = M_PI_2_F / math::max(_param_vt_f_trans_dur.get(), 0.1f);
@@ -272,7 +599,10 @@ void Tailsitter::update_transition_state()
 		}
 	}
 
-	_v_att_sp->thrust_body[2] = _mc_virtual_att_sp->thrust_body[2];
+	if (!(_dive_transition_active && (_vtol_mode == vtol_mode::TRANSITION_FRONT_P1
+					  || _vtol_mode == vtol_mode::TRANSITION_FRONT_ABORT))) {
+		_v_att_sp->thrust_body[2] = _mc_virtual_att_sp->thrust_body[2];
+	}
 
 	if (_vtol_mode == vtol_mode::TRANSITION_BACK) {
 		const float progress = math::constrain(_time_since_trans_start / B_TRANS_THRUST_BLENDING_DURATION, 0.f, 1.f);
@@ -281,7 +611,6 @@ void Tailsitter::update_transition_state()
 
 	_v_att_sp->timestamp = hrt_absolute_time();
 
-	const Eulerf euler_sp(_q_trans_sp);
 	_q_trans_sp.copyTo(_v_att_sp->q_d);
 }
 
@@ -329,7 +658,8 @@ void Tailsitter::fill_actuator_outputs()
 	// Motors
 	if (_vtol_mode == vtol_mode::FW_MODE) {
 
-		_thrust_setpoint_0->xyz[2] = -_vehicle_thrust_setpoint_virtual_fw->xyz[0];
+		const float fw_thrust = -_vehicle_thrust_setpoint_virtual_fw->xyz[0];
+		_thrust_setpoint_0->xyz[2] = fw_thrust;
 
 		/* allow differential thrust if enabled */
 		if (_param_vt_fw_difthr_en.get() & static_cast<int32_t>(VtFwDifthrEnBits::YAW_BIT)) {
@@ -344,13 +674,24 @@ void Tailsitter::fill_actuator_outputs()
 			_torque_setpoint_0->xyz[2] = _vehicle_torque_setpoint_virtual_fw->xyz[2] * _param_vt_fw_difthr_s_r.get();
 		}
 
-		// for the short period after switching to FW where there is no thrust published yet from the FW controller,
-		// keep publishing the last MC thrust to keep the motors running
-		if (hrt_elapsed_time(&_trans_finished_ts) < 50_ms) {
+		// Preserve the stock 50 ms FW-controller startup hold when the
+		// experimental handoff is disabled.
+		if (!_dive_handoff_active && hrt_elapsed_time(&_trans_finished_ts) < 50_ms) {
 			_thrust_setpoint_0->xyz[2] = _last_thr_in_mc;
 			_torque_setpoint_0->xyz[0] = 0.f;
 			_torque_setpoint_0->xyz[1] = 0.f;
 			_torque_setpoint_0->xyz[2] = 0.f;
+
+		} else if (_dive_handoff_active) {
+			const float progress = math::constrain((float)hrt_elapsed_time(&_dive_handoff_start_ts) * 1e-6f, 0.f, 1.f);
+			_thrust_setpoint_0->xyz[2] = (1.f - progress) * _dive_handoff_thrust + progress * fw_thrust;
+			const Vector3f fw_torque(_torque_setpoint_0->xyz);
+			const Vector3f blended_torque = (1.f - progress) * _dive_handoff_torque + progress * fw_torque;
+			blended_torque.copyTo(_torque_setpoint_0->xyz);
+
+			if (progress >= 1.f) {
+				_dive_handoff_active = false;
+			}
 		}
 
 	} else {
@@ -358,7 +699,9 @@ void Tailsitter::fill_actuator_outputs()
 
 		// for the short period after starting the backtransition where there is no thrust published yet from the MC controller,
 		// keep publishing the last FW thrust to keep the motors running
-		if (_vtol_mode != vtol_mode::TRANSITION_FRONT_P1 && hrt_elapsed_time(&_transition_start_timestamp) < 50_ms) {
+		if (_vtol_mode != vtol_mode::TRANSITION_FRONT_P1
+		    && _vtol_mode != vtol_mode::TRANSITION_FRONT_ABORT
+		    && hrt_elapsed_time(&_transition_start_timestamp) < 50_ms) {
 			_thrust_setpoint_0->xyz[2] = -_last_thr_in_fw_mode;
 		}
 

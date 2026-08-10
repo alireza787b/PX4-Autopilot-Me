@@ -74,6 +74,8 @@
 #include <uORB/topics/tecs_status.h>
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
+#include <uORB/topics/vehicle_angular_velocity.h>
+#include <uORB/topics/control_allocator_status.h>
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_command_ack.h>
 #include <uORB/topics/vehicle_control_mode.h>
@@ -148,6 +150,9 @@ public:
 
 	float get_home_position_z() { return _home_position_z; }
 	float get_calibrated_airspeed() { return _calibrated_airspeed; }
+	bool get_fresh_physical_airspeed(float &airspeed) const;
+	const struct vehicle_angular_velocity_s *get_angular_velocity() const { return &_vehicle_angular_velocity; }
+	const struct control_allocator_status_s *get_control_allocator_status() const { return &_control_allocator_status; }
 
 private:
 	void Run() override;
@@ -170,6 +175,8 @@ private:
 	uORB::Subscription _tecs_status_sub{ORB_ID(tecs_status)};
 	uORB::Subscription _vehicle_air_data_sub{ORB_ID(vehicle_air_data)};
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
+	uORB::Subscription _control_allocator_status_sub{ORB_ID(control_allocator_status)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _vehicle_cmd_sub{ORB_ID(vehicle_command)};
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
@@ -202,6 +209,8 @@ private:
 	position_setpoint_triplet_s		_pos_sp_triplet{};
 	tecs_status_s				_tecs_status{};
 	vehicle_attitude_s			_vehicle_attitude{};
+	vehicle_angular_velocity_s		_vehicle_angular_velocity{};
+	control_allocator_status_s		_control_allocator_status{};
 	vehicle_control_mode_s			_vehicle_control_mode{};
 	vehicle_land_detected_s			_land_detected{};
 	vehicle_local_position_s		_local_pos{};
