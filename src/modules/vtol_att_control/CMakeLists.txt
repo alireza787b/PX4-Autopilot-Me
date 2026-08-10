@@ -35,12 +35,21 @@ px4_add_module(
 	MAIN vtol_att_control
 	SRCS
 		vtol_att_control_main.cpp
+		TailsitterDiveTransition.cpp
 		tiltrotor.cpp
 		vtol_type.cpp
 		tailsitter.cpp
 		standard.cpp
 	MODULE_CONFIG
 		standard_params.yaml
+		tailsitter_params.yaml
 		tiltrotor_params.yaml
 		vtol_att_control_params.yaml
 	)
+
+if(BUILD_TESTING)
+	px4_add_unit_gtest(
+		SRC test/TailsitterDiveTransitionTest.cpp
+		EXTRA_SRCS TailsitterDiveTransition.cpp
+	)
+endif()

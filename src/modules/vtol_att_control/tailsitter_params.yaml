@@ -1,0 +1,88 @@
+module_name: vtol_att_control
+parameters:
+- group: VTOL Tailsitter
+  definitions:
+    VT_TS_DIVE_EN:
+      description:
+        short: Enable tailsitter dive-assisted front transition
+        long: |-
+          Enables an experimental, airspeed-gated tailsitter front transition that may rotate
+          the physical nose below the horizon. A fresh physical airspeed sensor is required.
+          When disabled, the stock tailsitter transition path is used unchanged.
+      type: boolean
+      default: 0
+      reboot_required: true
+    VT_TS_DIVE_ANG:
+      description:
+        short: Maximum tailsitter transition dive angle
+        long: |-
+          Maximum physical nose-down angle beyond the horizon during a dive-assisted front
+          transition. Zero degrees is the horizon; positive values point below it.
+      type: float
+      default: 10.0
+      unit: deg
+      min: 0.0
+      max: 20.0
+      increment: 1.0
+      decimal: 1
+    VT_TS_DIVE_RAT:
+      description:
+        short: Tailsitter dive transition angular rate
+        long: Maximum commanded rotation rate from physical nose-up hover toward forward flight.
+      type: float
+      default: 9.0
+      unit: deg/s
+      min: 3.0
+      max: 30.0
+      increment: 1.0
+      decimal: 1
+    VT_TS_DIVE_THR:
+      description:
+        short: Tailsitter dive transition collective thrust
+        long: |-
+          Collective motor thrust used during the dive-assisted front transition. Leave enough
+          actuator headroom for differential-thrust attitude control.
+      type: float
+      default: 0.60
+      unit: norm
+      min: 0.20
+      max: 0.85
+      increment: 0.01
+      decimal: 2
+    VT_TS_REC_ALT:
+      description:
+        short: Tailsitter transition recovery-height margin
+        long: |-
+          Fixed height margin added to the dynamic abort-recovery estimate. The estimate also
+          accounts for downward speed and the time required to rotate back above the horizon.
+      type: float
+      default: 25.0
+      unit: m
+      min: 5.0
+      max: 100.0
+      increment: 1.0
+      decimal: 1
+    VT_TS_REC_ACC:
+      description:
+        short: Conservative tailsitter recovery acceleration
+        long: |-
+          Conservative upward acceleration used only to estimate abort recovery height. Derive
+          this value from measured high-altitude recovery tests and retain an engineering margin.
+      type: float
+      default: 2.0
+      unit: m/s^2
+      min: 0.5
+      max: 10.0
+      increment: 0.1
+      decimal: 1
+    VT_TS_ABRT_RAT:
+      description:
+        short: Tailsitter controlled-abort angular rate
+        long: Maximum commanded rotation rate back toward physical nose-up multicopter flight.
+      type: float
+      default: 20.0
+      unit: deg/s
+      min: 5.0
+      max: 45.0
+      increment: 1.0
+      decimal: 1
