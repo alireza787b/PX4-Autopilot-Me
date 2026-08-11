@@ -32,6 +32,21 @@ parameters:
       max: 20.0
       increment: 1
       decimal: 2
+    VT_TS_DIVE_ANG:
+      description:
+        short: Extra tailsitter front-transition tilt
+        long: |-
+          Additional nose-down tilt applied to the tailsitter front-transition
+          attitude setpoint after its normal endpoint. This does not change the
+          transition rate, thrust, completion conditions, or quad-chute checks.
+          Set to 0 for the standard tailsitter transition trajectory.
+      type: float
+      default: 0.0
+      unit: deg
+      min: 0.0
+      max: 30.0
+      increment: 0.5
+      decimal: 1
     VT_B_TRANS_DUR:
       description:
         short: Maximum duration of a back transition
