@@ -255,8 +255,10 @@ void Tailsitter::update_transition_state()
 
 		// calculate pitching rate - and constrain to at least 0.1s transition time
 		const float trans_pitch_rate = M_PI_2_F / math::max(_param_vt_f_trans_dur.get(), 0.1f);
+		const float transition_tilt = M_PI_2_F - math::radians(_param_fw_psp_off.get())
+					      + math::radians(_param_vt_ts_dive_ang.get());
 
-		if (tilt < M_PI_2_F - math::radians(_param_fw_psp_off.get())) {
+		if (tilt < transition_tilt) {
 			_q_trans_sp = Quatf(AxisAnglef(_trans_rot_axis,
 						       _time_since_trans_start * trans_pitch_rate)) * _q_trans_start;
 		}

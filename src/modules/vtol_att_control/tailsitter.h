@@ -99,7 +99,8 @@ private:
 	matrix::Eulerf getFixedWingAttitudeEuler() const;
 
 	DEFINE_PARAMETERS_CUSTOM_PARENT(VtolType,
-					(ParamFloat<px4::params::FW_PSP_OFF>) _param_fw_psp_off
+					(ParamFloat<px4::params::FW_PSP_OFF>) _param_fw_psp_off,
+					(ParamFloat<px4::params::VT_TS_DIVE_ANG>) _param_vt_ts_dive_ang
 				       )
 
 
