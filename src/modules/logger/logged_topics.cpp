@@ -57,6 +57,8 @@ void LoggedTopics::add_default_topics()
 	add_topic("commander_state");
 	add_topic("config_overrides");
 	add_topic("cpuload");
+	// Record independent diagnostic publishers with the default logging profile.
+	add_topic_multi("debug_array", 100, 4);
 #if defined(CONFIG_NAVIGATOR_ADSB)
 	add_topic("detect_and_avoid");
 	add_topic("detect_and_avoid_most_urgent");
@@ -334,7 +336,6 @@ void LoggedTopics::add_high_rate_topics()
 
 void LoggedTopics::add_debug_topics()
 {
-	add_topic("debug_array");
 	add_topic("debug_key_value");
 	add_topic("debug_value");
 	add_topic("debug_vect");

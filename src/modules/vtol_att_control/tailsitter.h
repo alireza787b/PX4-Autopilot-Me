@@ -47,6 +47,8 @@
 #include <parameters/param.h>
 #include <drivers/drv_hrt.h>
 #include <matrix/matrix/math.hpp>
+#include <uORB/PublicationMulti.hpp>
+#include <uORB/topics/debug_array.h>
 
 // [rad] Pitch threshold required for completing transition to fixed-wing in automatic transitions
 static constexpr float PITCH_THRESHOLD_AUTO_TRANSITION_TO_FW = -1.05f; // -60°
@@ -66,6 +68,7 @@ public:
 
 	void update_vtol_state() override;
 	void update_transition_state() override;
+	void update_mc_state() override;
 	void update_fw_state() override;
 	void fill_actuator_outputs() override;
 	void waiting_on_tecs() override;
@@ -73,6 +76,16 @@ public:
 	void blendThrottleBeginningBackTransition(float scale);
 
 private:
+	uORB::PublicationMulti<debug_array_s> _diagnostics_pub{ORB_ID(debug_array)};
+	hrt_abstime _diagnostics_timestamp{0};
+	hrt_abstime _backtransition_exit_timestamp{0};
+	uint32_t _backtransition_exit_count{0};
+	uint8_t _backtransition_exit_reason{0}; ///< bit 0: pitch, bit 1: timer
+	uint8_t _diagnostics_output_frame{0}; ///< 0: MC, 1: FW; frame of the last output setpoint write
+	float _backtransition_exit_pitch{NAN};
+	float _backtransition_exit_elapsed{NAN};
+	void publishDiagnostics();
+
 	enum class vtol_mode {
 		MC_MODE = 0,			/**< vtol is in multicopter mode */
 		TRANSITION_FRONT_P1,	/**< vtol is in front transition part 1 mode */

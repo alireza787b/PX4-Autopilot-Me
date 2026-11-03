@@ -40,6 +40,8 @@
 #pragma once
 
 #include "FlightTask.hpp"
+#include <uORB/PublicationMulti.hpp>
+#include <uORB/topics/debug_array.h>
 #include <uORB/topics/position_setpoint_triplet.h>
 #include <uORB/topics/position_setpoint.h>
 #include <uORB/topics/home_position.h>
@@ -187,6 +189,15 @@ protected:
 				       );
 
 private:
+	uORB::PublicationMulti<debug_array_s> _diagnostics_pub{ORB_ID(debug_array)};
+	hrt_abstime _diagnostics_timestamp{0};
+	hrt_abstime _braking_activation_timestamp{0};
+	uint32_t _braking_activation_count{0};
+	uint8_t _braking_activation_reason{0}; ///< bit 0: vertical, bit 1: horizontal speed exceeded
+	matrix::Vector3f _braking_activation_velocity{NAN, NAN, NAN};
+	matrix::Vector3f _braking_activation_acceleration{NAN, NAN, NAN};
+	void _publishDiagnostics(const matrix::Vector3f &raw_velocity);
+
 	matrix::Vector2f _lock_position_xy; /**< if no valid triplet is received, lock positition to current position */
 	matrix::Vector3f _takeoff_liftoff_position; /**< tracks the position state during the takeoff ramp and is frozen at FLIGHT */
 	hrt_abstime _time_stamp_airborne{0}; /**< when the takeoff state reached FLIGHT, 0 while on the ground */

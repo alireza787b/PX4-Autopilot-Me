@@ -41,6 +41,8 @@
 
 #include "tailsitter.h"
 #include "vtol_att_control_main.h"
+#include <float.h>
+#include <string.h>
 
 using namespace matrix;
 
@@ -136,6 +138,13 @@ void Tailsitter::update_vtol_state()
 
 			// check if we have reached pitch angle to switch to MC mode
 			if (pitch >= PITCH_THRESHOLD_AUTO_TRANSITION_TO_MC || _time_since_trans_start > _param_vt_b_trans_dur.get()) {
+				// Latch both conditions when they coincide; retain the exit across throttled samples.
+				_backtransition_exit_reason = (pitch >= PITCH_THRESHOLD_AUTO_TRANSITION_TO_MC ? 1 : 0)
+							      | (_time_since_trans_start > _param_vt_b_trans_dur.get() ? 2 : 0);
+				_backtransition_exit_timestamp = hrt_absolute_time();
+				_backtransition_exit_pitch = pitch;
+				_backtransition_exit_elapsed = _time_since_trans_start;
+				++_backtransition_exit_count;
 				_vtol_mode = vtol_mode::MC_MODE;
 			}
 
@@ -283,6 +292,7 @@ void Tailsitter::update_transition_state()
 
 	const Eulerf euler_sp(_q_trans_sp);
 	_q_trans_sp.copyTo(_v_att_sp->q_d);
+	_diagnostics_output_frame = 0;
 }
 
 void Tailsitter::waiting_on_tecs()
@@ -291,9 +301,16 @@ void Tailsitter::waiting_on_tecs()
 	_v_att_sp->thrust_body[0] = -_last_thr_in_mc;
 }
 
+void Tailsitter::update_mc_state()
+{
+	VtolType::update_mc_state();
+	_diagnostics_output_frame = 0;
+}
+
 void Tailsitter::update_fw_state()
 {
 	VtolType::update_fw_state();
+	_diagnostics_output_frame = 1;
 
 }
 
@@ -373,6 +390,50 @@ void Tailsitter::fill_actuator_outputs()
 		_torque_setpoint_1->xyz[1] = _vehicle_torque_setpoint_virtual_fw->xyz[1];
 		_torque_setpoint_1->xyz[2] = _vehicle_torque_setpoint_virtual_fw->xyz[2];
 	}
+
+	publishDiagnostics();
+}
+
+void Tailsitter::publishDiagnostics()
+{
+	const hrt_abstime now = hrt_absolute_time();
+
+	if (now - _diagnostics_timestamp < 100_ms) {
+		return;
+	}
+
+	_diagnostics_timestamp = now;
+	debug_array_s diagnostics{};
+	diagnostics.timestamp = now;
+	diagnostics.id = 102;
+	memcpy(diagnostics.name, "tail_diag", sizeof("tail_diag"));
+	diagnostics.data[0] = static_cast<int>(_vtol_mode);
+	diagnostics.data[1] = _backtransition_exit_reason;
+	diagnostics.data[2] = _backtransition_exit_timestamp ? (now - _backtransition_exit_timestamp) * 1e-6f : NAN;
+	diagnostics.data[3] = _backtransition_exit_pitch;
+	diagnostics.data[4] = _backtransition_exit_elapsed;
+	diagnostics.data[5] = _time_since_trans_start;
+	diagnostics.data[6] = PITCH_THRESHOLD_AUTO_TRANSITION_TO_MC;
+	diagnostics.data[7] = _param_vt_b_trans_dur.get();
+	// Preserve the raw output; compare in MC frame, including across delayed mode handoffs.
+	const Quatf measured(_v_att->q);
+	const Quatf setpoint(_v_att_sp->q_d);
+	measured.copyTo(&diagnostics.data[8]);
+	setpoint.copyTo(&diagnostics.data[12]);
+	const Quatf setpoint_mc = _diagnostics_output_frame == 1 ? setpoint * Quatf(Eulerf(0.f, -M_PI_2_F, 0.f)) : setpoint;
+	const float norm_product = measured.norm() * setpoint_mc.norm();
+	diagnostics.data[16] = norm_product > FLT_EPSILON
+			       ? 2.f * acosf(math::constrain(fabsf(measured.dot(setpoint_mc)) / norm_product, 0.f, 1.f)) : NAN;
+	const auto age_s = [now](hrt_abstime timestamp) {
+		return timestamp > 0 && timestamp <= now ? (now - timestamp) * 1e-6f : NAN;
+	};
+	diagnostics.data[17] = age_s(_v_att->timestamp);
+	diagnostics.data[18] = age_s(_v_att_sp->timestamp);
+	diagnostics.data[19] = age_s(_mc_virtual_att_sp->timestamp);
+	diagnostics.data[20] = age_s(_fw_virtual_att_sp->timestamp);
+	diagnostics.data[21] = _backtransition_exit_count;
+	diagnostics.data[22] = _diagnostics_output_frame;
+	_diagnostics_pub.publish(diagnostics);
 }
 
 

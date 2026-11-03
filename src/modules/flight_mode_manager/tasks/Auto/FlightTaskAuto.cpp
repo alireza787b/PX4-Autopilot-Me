@@ -37,6 +37,7 @@
 #include "FlightTaskAuto.hpp"
 #include <mathlib/mathlib.h>
 #include <float.h>
+#include <string.h>
 
 using namespace matrix;
 using namespace time_literals;
@@ -194,6 +195,7 @@ bool FlightTaskAuto::update()
 	}
 
 	_checkEmergencyBraking();
+	const Vector3f raw_velocity = _velocity_setpoint;
 	Vector3f waypoints[] = {_triplet_previous, _position_setpoint, _triplet_next};
 
 	if (_type == WaypointType::position && _hasPassedCurrentWaypoint()) {
@@ -274,7 +276,45 @@ bool FlightTaskAuto::update()
 
 	_smoothYaw();
 	_constraints.want_takeoff = _checkTakeoff();
+	_publishDiagnostics(raw_velocity);
 	return ret;
+}
+
+void FlightTaskAuto::_publishDiagnostics(const Vector3f &raw_velocity)
+{
+	const hrt_abstime now = hrt_absolute_time();
+
+	if (now - _diagnostics_timestamp < 100_ms) {
+		return;
+	}
+
+	_diagnostics_timestamp = now;
+	debug_array_s diagnostics{};
+	diagnostics.timestamp = now;
+	diagnostics.id = 101;
+	memcpy(diagnostics.name, "auto_diag", sizeof("auto_diag"));
+	diagnostics.data[0] = static_cast<int>(_type);
+	diagnostics.data[1] = _is_emergency_braking_active;
+	diagnostics.data[2] = _braking_activation_reason;
+	diagnostics.data[3] = _braking_activation_timestamp ? (now - _braking_activation_timestamp) * 1e-6f : NAN;
+	// NED vectors: activation velocity/acceleration, raw landing velocity, current smoothing and output state.
+	_braking_activation_velocity.copyTo(&diagnostics.data[4]);
+	_braking_activation_acceleration.copyTo(&diagnostics.data[7]);
+
+	if (_type == WaypointType::land) {
+		raw_velocity.copyTo(&diagnostics.data[10]);
+
+	} else {
+		Vector3f(NAN, NAN, NAN).copyTo(&diagnostics.data[10]);
+	}
+
+	_position_smoothing.getCurrentVelocity().copyTo(&diagnostics.data[13]);
+	_position_smoothing.getCurrentAcceleration().copyTo(&diagnostics.data[16]);
+	_velocity.copyTo(&diagnostics.data[19]);
+	_velocity_setpoint.copyTo(&diagnostics.data[22]);
+	_acceleration_setpoint.copyTo(&diagnostics.data[25]);
+	diagnostics.data[28] = _braking_activation_count;
+	_diagnostics_pub.publish(diagnostics);
 }
 
 void FlightTaskAuto::overrideCruiseSpeed(const float cruise_speed_m_s)
@@ -751,6 +791,12 @@ void FlightTaskAuto::_checkEmergencyBraking()
 		const bool is_horizontal_speed_exceeded = speed_horizontal > (factor * _param_mpc_xy_vel_max.get());
 
 		if (is_vertical_speed_exceeded || is_horizontal_speed_exceeded) {
+			// Latch activation evidence before the trajectory is re-seeded.
+			_braking_activation_reason = (is_vertical_speed_exceeded ? 1 : 0) | (is_horizontal_speed_exceeded ? 2 : 0);
+			_braking_activation_timestamp = hrt_absolute_time();
+			_braking_activation_velocity = _position_smoothing.getCurrentVelocity();
+			_braking_activation_acceleration = _position_smoothing.getCurrentAcceleration();
+			++_braking_activation_count;
 			_is_emergency_braking_active = true;
 			// Start the braking ramp from the vehicle not the reference.
 			_position_smoothing.forceSetVelocity(_velocity);
