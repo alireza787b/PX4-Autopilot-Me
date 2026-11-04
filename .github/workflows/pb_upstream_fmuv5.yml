@@ -1,0 +1,49 @@
+name: PB upstream FMUv5 build
+
+on:
+  push:
+    branches:
+      - build/pb-fmuv5-upstream-2026-11-04
+    paths:
+      - .github/workflows/pb_upstream_fmuv5.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/px4/px4-dev:v1.18.0-beta2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: PX4/PX4-Autopilot
+          ref: 155f415168cef08dca2f5d85d2bc258b44a589ec
+          fetch-depth: 0
+      - name: Verify clean upstream source and compile FMUv5
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = 155f415168cef08dca2f5d85d2bc258b44a589ec
+          test -z "$(git status --porcelain)"
+          arm-none-eabi-gcc --version
+          make px4_fmu-v5_default -j2
+          mkdir -p delivery
+          cp build/px4_fmu-v5_default/px4_fmu-v5_default.px4 delivery/
+          cp build/px4_fmu-v5_default/parameters.xml delivery/
+          cp build/px4_fmu-v5_default/parameters.json delivery/
+          git rev-parse HEAD > delivery/SOURCE_COMMIT.txt
+          git submodule status --recursive > delivery/SUBMODULES.txt
+          arm-none-eabi-gcc --version > delivery/COMPILER.txt
+          find build/px4_fmu-v5_default -maxdepth 1 -name '*.sbom.spdx.json' -exec cp {} delivery/ \;
+          sha256sum delivery/* > delivery/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pb-upstream-fmuv5-155f415168-2026-11-04
+          path: delivery/
+          if-no-files-found: error
+          retention-days: 30
