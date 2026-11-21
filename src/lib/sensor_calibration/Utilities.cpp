@@ -90,28 +90,30 @@ int8_t FindAvailableCalibrationIndex(const char *sensor_type, uint32_t device_id
 
 	// device isn't currently using a calibration slot, select user preference (preferred_index)
 	//  if available, otherwise use the first available slot
-	uint32_t cal_device_ids[MAX_SENSOR_COUNT] {};
+	bool slot_available[MAX_SENSOR_COUNT] {};
 
 	for (unsigned i = 0; i < MAX_SENSOR_COUNT; ++i) {
 		char str[20] {};
 		snprintf(str, sizeof(str), "CAL_%s%u_ID", sensor_type, i);
 		int32_t device_id_val = 0;
 
-		if (param_get(param_find_no_notification(str), &device_id_val) == PX4_OK) {
-			cal_device_ids[i] = device_id_val;
+		const param_t param_handle = param_find_no_notification(str);
+
+		if ((param_handle != PARAM_INVALID) && (param_get(param_handle, &device_id_val) == PX4_OK)) {
+			slot_available[i] = (device_id_val == 0);
 		}
 	}
 
 	// use preferred_index if it's available
 	if ((preferred_index >= 0) && (preferred_index < MAX_SENSOR_COUNT)
-	    && (cal_device_ids[preferred_index] == 0)) {
+	    && slot_available[preferred_index]) {
 
 		calibration_index = preferred_index;
 
 	} else {
 		// otherwise select first available slot
 		for (int i = 0; i < MAX_SENSOR_COUNT; i++) {
-			if (cal_device_ids[i] == 0) {
+			if (slot_available[i]) {
 				calibration_index = i;
 				break;
 			}
