@@ -265,7 +265,7 @@ param set-default MPC_TILTMAX_AIR 30
 
 # Yaw control
 param set-default MPC_MAN_Y_MAX 15
-param set-default MPC_YAWRAUTO_MAX 20
+param set-default MPC_YAWRAUTO_MAX 10
 
 # Advanced options
 param set-default MPC_ALT_MODE 0
@@ -283,7 +283,8 @@ param set-default MPC_LAND_ALT1 8         # Start slowing close to ground (m)
 param set-default MPC_LAND_ALT2 3         # Final landing speed below this height (m)
 param set-default MPC_LAND_SPEED 0.6      # PX4 minimum landing descend rate (m/s)
 param set-default MPC_LAND_RADIUS 25
-param set-default MPC_LAND_RC_HELP 1
+# Autonomous landing; no pilot landing nudging.
+param set-default MPC_AUTO_NUDGING 0
 
 # Land detector
 param set-default LNDMC_Z_VEL_MAX 0.24
@@ -326,3 +327,7 @@ param set-default GPS_UBX_DYNMODEL 6      # Airborne <1g
 ################################################################################
 # Maintainer: px4xplane project - https://github.com/alireza787b/px4xplane/
 ################################################################################
+
+# Flight handling and actuator neutral calibration.
+param set-default MPC_THR_HOVER 0.25
+param set-default MPC_YAWRAUTO_ACC 10
