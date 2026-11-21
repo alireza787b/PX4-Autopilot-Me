@@ -9,7 +9,9 @@
 # Compatible Sim:    X-Plane 11/12
 #
 # AIRCRAFT REFERENCE VALUES:
-# - Active SITL mass model: 3,120 kg, matching the tested X-Plane aircraft
+# - PX4 nominal mass references: WEIGHT_BASE=WEIGHT_GROSS=3120 kg.
+# - Accepted November 8, 2026 flight: measured X-Plane mass 2857.22 kg.
+# - WEIGHT_* values do not set X-Plane's actual mass or loading.
 # - Public Alia reference MTOW: about 6,000 lb (2,721 kg)
 # - Wingspan: 50 ft (15 m) - Fixed-wing design
 # - Cruise Speed: 170 mph (75 m/s) in forward flight

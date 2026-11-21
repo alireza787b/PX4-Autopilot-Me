@@ -36,11 +36,14 @@
 ################################################################################
 # CONTROL ALLOCATION - Motor Configuration
 ################################################################################
-# Quadcopter X configuration with 5.2m diameter rotors
+# PX4 allocator frame: +X forward, +Y right, +Z down; positions in meters.
+# Rotation labels follow PX4 KM: negative = CW, positive = CCW.
+# These describe configured allocation, not measured model geometry or rotation.
+# Verify the loaded model's engine order and physical rotation separately.
 #
-# Motor Layout:        Front
+# Motor Layout:        Front (+X)
 #                        ^
-#                    1       0    (CW/CCW)
+#                    0       1    (CW/CCW)
 #                     \     /
 #                      \   /
 #                       \ /
@@ -49,8 +52,8 @@
 #                     /     \
 #                    2       3
 #
-# Motor 0: Front-Right (CCW) - Position: (+1.4, -1.4, 0)m from CG
-# Motor 1: Front-Left  (CW)  - Position: (+1.4, +1.4, 0)m from CG
+# Motor 0: Front-Left  (CW)  - Position: (+1.4, -1.4, 0)m from CG
+# Motor 1: Front-Right (CCW) - Position: (+1.4, +1.4, 0)m from CG
 # Motor 2: Rear-Left   (CCW) - Position: (-1.4, -1.4, 0)m from CG
 # Motor 3: Rear-Right  (CW)  - Position: (-1.4, +1.4, 0)m from CG
 #
@@ -58,12 +61,12 @@
 
 param set-default CA_ROTOR_COUNT 4
 
-# Motor 0: Front-Right (CCW)
+# Motor 0: Front-Left (CW)
 param set-default CA_ROTOR0_PX 1.4
 param set-default CA_ROTOR0_PY -1.4
 param set-default CA_ROTOR0_KM -0.05
 
-# Motor 1: Front-Left (CW)
+# Motor 1: Front-Right (CCW)
 param set-default CA_ROTOR1_PX 1.4
 param set-default CA_ROTOR1_PY 1.4
 
@@ -86,61 +89,47 @@ param set-default PWM_MAIN_FUNC4 104
 ################################################################################
 # EKF2 SENSOR FUSION
 ################################################################################
-# Optimized for X-Plane SITL with variable FPS (30-150 Hz)
+# GNSS is the inherited height reference (EKF2_HGT_REF=1).
+# Barometric height remains an additional aiding source (EKF2_BARO_CTRL=1).
 #
-# BAROMETER TUNING:
-# - BARO_NOISE: 1.0 m, matching the Alia SITL lesson that X-Plane baro should
-#   not be treated as centimeter-class when frame timing and physics vary.
-# - BARO_GATE: 10.0 (increased from default 3.0)
-#   * Tolerates FPS-induced timing gaps and altitude transients
-#   * Prevents false "BARO switch" errors during mission climbs
+# Measurement noise settings: GNSS position 1.5 m, GNSS velocity 0.30 m/s,
+# barometric altitude 1.0 m. These are estimator settings, not measured
+# simulator accuracy or injected sensor-noise amplitudes.
 #
-# GPS TUNING:
-# - GPS_P_NOISE: 0.15 m, kept conservative for this X-Plane model.
-#   * Barometer remains the primary smooth height source, but not centimeter-class.
-# - Horizontal noise: 0.01m (GPS horizontal is more accurate)
+# EKF2_BARO_GATE=10 and EKF2_GPS_P_GATE=8 are innovation gates in standard
+# deviations; larger gates do not fix sensor timing or guarantee no rejection.
 #
-# INNOVATION GATES:
-# All gates increased from default values for FPS variability tolerance.
-# Prevents false sensor faults during:
-# - X-Plane FPS drops (timing jitter)
-# - Mission altitude changes (pressure transients)
-# - Waypoint transitions (acceleration spikes)
-#
-# TROUBLESHOOTING:
-# If "BARO switch" errors occur:
-# 1. Verify CAL_BARO1_PRIO=0 (backup sensor disabled)
-# 2. Check only one barometer message per frame in px4xplane plugin
-# 3. Increase EKF2_BARO_GATE if needed (max 10.0)
+# The simulator exposes two barometer instances from one HIL_SENSOR stream.
+# CAL_BARO1_PRIO=0 disables the duplicate backup for sensor selection.
+# Diagnose source switches using sensor identities, timing and ULog innovations.
 
 # Simulation mode enablement
 param set-default SENS_EN_GPSSIM 1
 param set-default SENS_EN_BAROSIM 1
 
-# Barometer priority (single sensor for SITL simplicity)
+# Prefer the primary simulated barometer; disable the duplicate backup instance.
 param set-default CAL_BARO0_ID 6620172
 param set-default CAL_BARO0_PRIO 100
 param set-default CAL_BARO1_ID 6620428
-param set-default CAL_BARO1_PRIO 0        # Backup disabled (prevents mid-mission switching)
+param set-default CAL_BARO1_PRIO 0        # Backup instance disabled
 
 # EKF2 core configuration
 param set-default EKF2_MULTI_IMU 1
 param set-default SENS_IMU_MODE 0
 
 # Accelerometer bias estimation for X-Plane SITL.
-param set-default EKF2_ABL_LIM 2.5        # X-Plane SITL requires higher tolerance (see note below)
+param set-default EKF2_ABL_LIM 2.5        # Accelerometer bias state limit, m/s^2
 param set-default EKF2_ABL_ACCLIM 35.0
-param set-default EKF2_ACC_NOISE 1.0      # Better accelerometer trust
-param set-default EKF2_ACC_B_NOISE 0.001  # Accel bias damping for frame-paced SITL updates
+param set-default EKF2_ACC_NOISE 1.0      # Accelerometer measurement noise, m/s^2
+param set-default EKF2_ACC_B_NOISE 0.001  # Accelerometer bias process noise, m/s^3
 
-# X-PLANE SITL NOTE: EKF2_ABL_LIM = 2.5 (vs Gazebo default 0.4)
-# Required because X-Plane sensor updates are frame-paced and can vary with
-# rendering load, which can make EKF2 estimate higher acceleration bias.
-# This does NOT affect flight performance - only the preflight arming check.
+# EKF2_ABL_LIM bounds estimated accelerometer bias states during operation.
+# It affects the running estimator, not only preflight checks. It does not
+# correct sensor timing, units or frame transforms.
 
 # Barometer parameters.
-param set-default EKF2_BARO_NOISE 1.0     # Baro height noise in m; avoids overconfident fusion during X-Plane transients
-param set-default EKF2_BARO_GATE 10.0     # Increased for FPS variability tolerance
+param set-default EKF2_BARO_NOISE 1.0     # Barometric altitude measurement noise, m
+param set-default EKF2_BARO_GATE 10.0     # Height innovation gate, standard deviations
 
 # Use neutral simulated accelerometer offsets. The px4xplane bridge publishes
 # attitude-consistent HIL accelerometer data, so model-specific calibration
@@ -153,8 +142,8 @@ param set-default CAL_ACC0_ZOFF 0.0
 # GPS parameters
 param set-default SENS_GNSS0_DELAY 10
 param set-default SENS_GNSS1_DELAY 10
-param set-default EKF2_GPS_P_NOISE 1.5    # X-Plane HIL position covariance
-param set-default EKF2_GPS_V_NOISE 0.30   # X-Plane HIL velocity covariance for variable-FPS ground/transition phases
+param set-default EKF2_GPS_P_NOISE 1.5    # GNSS position measurement noise, m
+param set-default EKF2_GPS_V_NOISE 0.30   # GNSS velocity measurement noise, m/s
 param set-default EKF2_GPS_P_GATE 8.0     # Innovation gate
 
 # Magnetometer parameters
