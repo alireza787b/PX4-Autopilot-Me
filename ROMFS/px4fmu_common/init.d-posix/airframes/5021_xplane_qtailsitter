@@ -229,8 +229,8 @@ param set-default FW_AIRSPD_MIN 21
 param set-default FW_AIRSPD_TRIM 26
 param set-default FW_AIRSPD_MAX 34
 
-# Local cruise trim seed; PX4 applies air-density compensation.
-param set-default FW_THR_TRIM 0.18
+# Local cruise trim seed from two 2 kg compact-stand logs.
+param set-default FW_THR_TRIM 0.12
 param set-default FW_THR_MAX 1
 param set-default FW_THR_SLEW_MAX 0.20
 
@@ -258,7 +258,8 @@ param set-default FW_PR_I 0.016667
 param set-default FW_R_TC 1.5
 param set-default FW_R_LIM 16
 param set-default FW_RR_P 0.26
-param set-default FW_RR_I 0.014318
+# Modest bias rejection trial after sustained roll-rate tracking error.
+param set-default FW_RR_I 0.020
 param set-default FW_RR_FF 0
 
 param set-default FW_YR_P 0.099422
