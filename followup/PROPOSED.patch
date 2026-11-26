@@ -1,0 +1,325 @@
+diff --git a/src/modules/vtol_att_control/standard.cpp b/src/modules/vtol_att_control/standard.cpp
+index 3966db91cc..bc1fc2f1d7 100644
+--- a/src/modules/vtol_att_control/standard.cpp
++++ b/src/modules/vtol_att_control/standard.cpp
+@@ -80,10 +80,9 @@ void Standard::checkTypeSpecificQuadchute()
+ 	}
+ }
+ 
+-void Standard::onFrontTransitionCompleted()
++float Standard::frontTransitionPitch() const
+ {
+-	// don't set pusher throttle here as it's being ramped up elsewhere
+-	_front_transition_pitch = Eulerf(Quatf(_v_att_sp->q_d)).theta();
++	return Eulerf(Quatf(_v_att_sp->q_d)).theta();
+ }
+ 
+ void Standard::onFrontTransitionAborted()
+@@ -330,25 +329,11 @@ void Standard::fill_actuator_outputs()
+ void
+ Standard::waiting_on_tecs()
+ {
+-	// keep thrust and pitch from transition
+ 	blendThrottleAfterFrontTransition(0.0f);
+-	blendPitchAfterFrontTransition(0.0f);
+-};
++}
+ 
+ void Standard::blendThrottleAfterFrontTransition(float scale)
+ {
+ 	const float tecs_throttle = _v_att_sp->thrust_body[0];
+ 	_v_att_sp->thrust_body[0] = scale * tecs_throttle + (1.0f - scale) * _pusher_throttle;
+ }
+-
+-void Standard::blendPitchAfterFrontTransition(float scale)
+-{
+-	if (!PX4_ISFINITE(_front_transition_pitch)) {
+-		return;
+-	}
+-
+-	const Eulerf fw_attitude_setpoint(Quatf(_v_att_sp->q_d));
+-	const float pitch_body = scale * fw_attitude_setpoint.theta() + (1.0f - scale) * _front_transition_pitch;
+-	const Quatf q_sp(Eulerf(fw_attitude_setpoint.phi(), pitch_body, fw_attitude_setpoint.psi()));
+-	q_sp.copyTo(_v_att_sp->q_d);
+-}
+diff --git a/src/modules/vtol_att_control/standard.h b/src/modules/vtol_att_control/standard.h
+index 3da989752f..c8fc2ba54d 100644
+--- a/src/modules/vtol_att_control/standard.h
++++ b/src/modules/vtol_att_control/standard.h
+@@ -63,13 +63,11 @@ public:
+ 	void fill_actuator_outputs() override;
+ 	void waiting_on_tecs() override;
+ 	void blendThrottleAfterFrontTransition(float scale) override;
+-	void blendPitchAfterFrontTransition(float scale) override;
+ 
+ private:
+ 	float _pusher_throttle{0.0f};
+ 	float _airspeed_trans_blend_margin{0.0f};
+ 	hrt_abstime _last_time_pusher_transition_update{0};
+-	float _front_transition_pitch{NAN};
+ 
+ 	systemlib::Hysteresis _pusher_failure_hysteresis{false};
+ 	bool _pusher_failed{false}; ///< latched until reboot or until the detection is disabled
+@@ -77,7 +75,7 @@ private:
+ 	void parameters_update() override;
+ 
+ 	bool isBackTransitionCompleted() override;
+-	void onFrontTransitionCompleted() override;
++	float frontTransitionPitch() const override;
+ 	void onFrontTransitionAborted() override;
+ 	void onQuadchute() override;
+ 	void checkTypeSpecificQuadchute() override;
+diff --git a/src/modules/vtol_att_control/tailsitter.cpp b/src/modules/vtol_att_control/tailsitter.cpp
+index 7ee984e1a8..ccf0a8d1ae 100644
+--- a/src/modules/vtol_att_control/tailsitter.cpp
++++ b/src/modules/vtol_att_control/tailsitter.cpp
+@@ -44,9 +44,6 @@
+ 
+ using namespace matrix;
+ 
+-// Allow several fixed-wing setpoint periods for the handoff to establish continuity.
+-static constexpr hrt_abstime PITCH_HANDOFF_SETPOINT_TIMEOUT = 100_ms;
+-
+ Tailsitter::Tailsitter(VtolAttitudeControl *attc) :
+ 	VtolType(attc)
+ {
+@@ -109,34 +106,18 @@ bool Tailsitter::isBackTransitionCompleted()
+ 	return pitch >= PITCH_THRESHOLD_AUTO_TRANSITION_TO_MC || _time_since_trans_start > _param_vt_b_trans_dur.get();
+ }
+ 
+-void Tailsitter::onTransitionStart()
+-{
+-	_flag_was_in_trans_mode = false;
+-	_front_transition_pitch = NAN;
+-}
+-
+-void Tailsitter::onFrontTransitionCompleted()
++float Tailsitter::frontTransitionPitch() const
+ {
+-	if (_land_detected->landed || !_v_control_mode->flag_control_altitude_enabled || !_flag_was_in_trans_mode
+-	    || _v_att_sp->timestamp == 0 || hrt_elapsed_time(&_v_att_sp->timestamp) > PITCH_HANDOFF_SETPOINT_TIMEOUT) {
+-		return;
++	if (can_transition_on_ground() || !_v_control_mode->flag_control_altitude_enabled || !_flag_was_in_trans_mode) {
++		return NAN;
+ 	}
+ 
+ 	// The transition setpoint is in the multicopter frame.
+-	Quatf q_fw = _q_trans_sp * _q_fw_to_mc;
+-	const float norm_squared = q_fw.norm_squared();
+-
+-	if (PX4_ISFINITE(norm_squared) && norm_squared > FLT_EPSILON) {
+-		q_fw.normalize();
+-		_front_transition_pitch = Eulerf(q_fw).theta();
+-		_last_pitch_handoff_update = _trans_finished_ts;
+-	}
++	return Eulerf(_q_trans_sp * _q_fw_to_mc).theta();
+ }
+ 
+ void Tailsitter::onQuadchute()
+ {
+-	_front_transition_pitch = NAN;
+-
+ 	if (_common_vtol_mode != mode::ROTARY_WING) {
+ 		// for the short period after the switch where there is no thrust published yet from the MC controller,
+ 		// keep publishing the last FW thrust (see fill_actuator_outputs)
+@@ -239,60 +220,17 @@ void Tailsitter::waiting_on_tecs()
+ {
+ 	// Hold thrust while waiting for the fixed-wing setpoint.
+ 	_v_att_sp->thrust_body[0] = -_last_thr_in_mc;
+-
+-	if (hrt_elapsed_time(&_trans_finished_ts) > PITCH_HANDOFF_SETPOINT_TIMEOUT) {
+-		_front_transition_pitch = NAN;
+-	}
+-
+-	blendPitchAfterFrontTransition(0.f);
+ }
+ 
+ void Tailsitter::update_fw_state()
+ {
+-	if (PX4_ISFINITE(_front_transition_pitch)) {
+-		const hrt_abstime now = hrt_absolute_time();
+-		const hrt_abstime fw_setpoint_time = _fw_virtual_att_sp->timestamp;
+-
+-		// After a gap or a change of control mode, use the normal fixed-wing reference.
+-		if (!_v_control_mode->flag_control_altitude_enabled || fw_setpoint_time == 0 || fw_setpoint_time > now
+-		    || now - fw_setpoint_time > PITCH_HANDOFF_SETPOINT_TIMEOUT
+-		    || now - _last_pitch_handoff_update > PITCH_HANDOFF_SETPOINT_TIMEOUT) {
+-			_front_transition_pitch = NAN;
+-
+-		} else {
+-			_last_pitch_handoff_update = now;
+-		}
++	if (!_v_control_mode->flag_control_altitude_enabled) {
++		clearFrontTransitionPitch();
+ 	}
+ 
+ 	VtolType::update_fw_state();
+ }
+ 
+-void Tailsitter::blendPitchAfterFrontTransition(float scale)
+-{
+-	if (!PX4_ISFINITE(_front_transition_pitch)) {
+-		return;
+-	}
+-
+-	Quatf q_fw(_v_att_sp->q_d);
+-	const float norm_squared = q_fw.norm_squared();
+-
+-	if (!PX4_ISFINITE(norm_squared) || norm_squared <= FLT_EPSILON) {
+-		_front_transition_pitch = NAN;
+-		return;
+-	}
+-
+-	q_fw.normalize();
+-	Eulerf fw_attitude_setpoint(q_fw);
+-
+-	if (!fw_attitude_setpoint.isAllFinite()) {
+-		_front_transition_pitch = NAN;
+-		return;
+-	}
+-
+-	fw_attitude_setpoint.theta() = (1.f - scale) * _front_transition_pitch + scale * fw_attitude_setpoint.theta();
+-	Quatf(fw_attitude_setpoint).copyTo(_v_att_sp->q_d);
+-}
+-
+ /**
+ * Write data to actuator output topic.
+ */
+diff --git a/src/modules/vtol_att_control/tailsitter.h b/src/modules/vtol_att_control/tailsitter.h
+index 3e1c0ff76d..00fe2b9a8c 100644
+--- a/src/modules/vtol_att_control/tailsitter.h
++++ b/src/modules/vtol_att_control/tailsitter.h
+@@ -69,7 +69,6 @@ public:
+ 	void fill_actuator_outputs() override;
+ 	void waiting_on_tecs() override;
+ 	void blendThrottleAfterFrontTransition(float scale) override;
+-	void blendPitchAfterFrontTransition(float scale) override;
+ 	void blendThrottleBeginningBackTransition(float scale);
+ 
+ private:
+@@ -78,8 +77,6 @@ private:
+ 	matrix::Quatf _q_trans_start;
+ 	matrix::Quatf _q_trans_sp;
+ 	matrix::Vector3f _trans_rot_axis;
+-	float _front_transition_pitch{NAN};
+-	hrt_abstime _last_pitch_handoff_update{0};
+ 
+ 	inline static const matrix::Quatf _q_fw_to_mc{matrix::Eulerf{0.f, M_PI_2_F, 0.f}};
+ 
+@@ -87,8 +84,8 @@ private:
+ 
+ 	bool isFrontTransitionCompleted() override;
+ 	bool isBackTransitionCompleted() override;
+-	void onTransitionStart() override;
+-	void onFrontTransitionCompleted() override;
++	void onTransitionStart() override { _flag_was_in_trans_mode = false; }
++	float frontTransitionPitch() const override;
+ 	void onQuadchute() override;
+ 	bool isPitchExceeded() override;
+ 	bool isRollExceeded() override;
+diff --git a/src/modules/vtol_att_control/vtol_type.cpp b/src/modules/vtol_att_control/vtol_type.cpp
+index a9d05ded97..f466c457a3 100644
+--- a/src/modules/vtol_att_control/vtol_type.cpp
++++ b/src/modules/vtol_att_control/vtol_type.cpp
+@@ -132,6 +132,7 @@ void VtolType::update_fw_state()
+ 	    && _v_control_mode->flag_control_altitude_enabled) {
+ 
+ 		waiting_on_tecs();
++		blendPitchAfterFrontTransition(0.f);
+ 		_throttle_blend_start_ts = hrt_absolute_time();
+ 
+ 	} else if (shouldBlendThrottleAfterFrontTransition()) {
+@@ -152,12 +153,24 @@ void VtolType::update_fw_state()
+ 	check_quadchute_condition();
+ }
+ 
++void VtolType::blendPitchAfterFrontTransition(float scale)
++{
++	if (!PX4_ISFINITE(_front_transition_pitch)) {
++		return;
++	}
++
++	Eulerf attitude_sp{Quatf(_v_att_sp->q_d)};
++	attitude_sp.theta() = math::lerp(_front_transition_pitch, attitude_sp.theta(), scale);
++	Quatf(attitude_sp).copyTo(_v_att_sp->q_d);
++}
++
+ void VtolType::update_vtol_state()
+ {
+ 	checkTypeSpecificQuadchute();
+ 
+ 	if (_attc->is_quadchute_active()) {
+ 		// Failsafe event, engage mc motors immediately
++		clearFrontTransitionPitch();
+ 		onQuadchute();
+ 		_common_vtol_mode = mode::ROTARY_WING;
+ 
+@@ -178,7 +191,7 @@ void VtolType::update_vtol_state()
+ 			if (isFrontTransitionCompleted()) {
+ 				_common_vtol_mode = mode::FIXED_WING;
+ 				_trans_finished_ts = hrt_absolute_time();
+-				onFrontTransitionCompleted();
++				_front_transition_pitch = frontTransitionPitch();
+ 			}
+ 
+ 			break;
+@@ -285,13 +298,14 @@ bool VtolType::isFrontTransitionSpeedOrTimeReached() const
+ 
+ }
+ 
+-bool VtolType::can_transition_on_ground()
++bool VtolType::can_transition_on_ground() const
+ {
+ 	return !_v_control_mode->flag_armed || _land_detected->landed;
+ }
+ 
+ void VtolType::resetTransitionStates()
+ {
++	clearFrontTransitionPitch();
+ 	_transition_start_timestamp = hrt_absolute_time();
+ 	_time_since_trans_start = 0.f;
+ 	_local_position_z_start_of_transition = _local_pos->z;
+diff --git a/src/modules/vtol_att_control/vtol_type.h b/src/modules/vtol_att_control/vtol_type.h
+index 42975dac06..f01323830f 100644
+--- a/src/modules/vtol_att_control/vtol_type.h
++++ b/src/modules/vtol_att_control/vtol_type.h
+@@ -213,7 +213,7 @@ public:
+ 	/**
+ 	 * Returns true if we're allowed to do a mode transition on the ground.
+ 	 */
+-	bool can_transition_on_ground();
++	bool can_transition_on_ground() const;
+ 
+ 	/**
+ 	 * Pusher assist in hover (pusher/pull for standard VTOL, motor tilt for tiltrotor)
+@@ -221,7 +221,6 @@ public:
+ 	float pusher_assist();
+ 
+ 	virtual void blendThrottleAfterFrontTransition(float scale) {};
+-	virtual void blendPitchAfterFrontTransition(float scale) {};
+ 
+ 	mode get_mode() {return _common_vtol_mode;}
+ 
+@@ -358,9 +357,10 @@ protected:
+ 	virtual void onTransitionStart() {}
+ 
+ 	/**
+-	 * Called on the switch from front transition to fixed-wing mode.
++	 * Returns the last transition pitch in the fixed-wing frame, or NaN to skip blending.
+ 	 */
+-	virtual void onFrontTransitionCompleted() {}
++	virtual float frontTransitionPitch() const { return NAN; }
++	void clearFrontTransitionPitch() { _front_transition_pitch = NAN; }
+ 
+ 	/**
+ 	 * Called when a front transition is aborted into hover because fixed-wing is no longer requested.
+@@ -420,6 +420,9 @@ protected:
+ 				       )
+ 
+ private:
++	float _front_transition_pitch{NAN};
++	void blendPitchAfterFrontTransition(float scale);
++
+ 	hrt_abstime _throttle_blend_start_ts{0};	// time at which we start blending between transition throttle and fixed wing throttle
+ 
+ 	bool shouldBlendThrottleAfterFrontTransition() { return _throttle_blend_start_ts != 0; };
